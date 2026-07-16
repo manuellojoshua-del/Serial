@@ -620,7 +620,7 @@ PANEL_HTML = r"""
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>CineDrive Studio v10.5.4</title>
+<title>CineDrive Studio v10.6.1 · Smart Watermark Safe Area</title>
 
 <style>
 :root{
@@ -721,7 +721,7 @@ button:active{transform:translateY(0) scale(.995)}
 .scan-restore-box h3{margin:0 0 8px}.scan-series-grid{display:grid;gap:12px;margin-top:14px}.scan-series-card{padding:14px;border:1px solid var(--line);border-radius:14px;background:rgba(8,12,30,.72)}
 .scan-series-card form{margin:0}.episode-chips{display:flex;flex-wrap:wrap;gap:6px;margin:10px 0}.episode-chips span{padding:5px 8px;border-radius:999px;background:rgba(139,92,246,.18);border:1px solid rgba(139,92,246,.35);font-size:12px}.soft-line{border:0;border-top:1px solid var(--line);margin:20px 0}
 
-.data-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin:14px 0}.data-stat{padding:15px;border:1px solid var(--line);border-radius:15px;background:rgba(8,12,28,.56)}.data-stat b{display:block;font-size:24px;margin-top:5px}.action-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px}.action-grid form{margin:0}.action-grid button{margin-top:0}.danger{background:linear-gradient(135deg,#be123c,#ef4444)!important}.json-box{max-height:520px;overflow:auto;white-space:pre-wrap;word-break:break-word;background:#050814;border:1px solid var(--line);border-radius:14px;padding:14px;font:12px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace}.backup-row{display:grid;grid-template-columns:1fr auto auto;gap:8px;align-items:center;padding:10px 0;border-bottom:1px solid var(--line)}.backup-row form{margin:0}.backup-row button{margin:0;padding:9px 12px}.notice{padding:12px 14px;border:1px solid rgba(52,211,153,.35);background:rgba(52,211,153,.08);border-radius:13px;margin:12px 0}
+.data-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin:14px 0}.data-stat{padding:15px;border:1px solid var(--line);border-radius:15px;background:rgba(8,12,28,.56)}.data-stat b{display:block;font-size:24px;margin-top:5px}.action-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px}.action-grid form{margin:0}.action-grid button{margin-top:0}.danger{background:linear-gradient(135deg,#be123c,#ef4444)!important}.json-box{max-height:520px;overflow:auto;white-space:pre-wrap;word-break:break-word;background:#050814;border:1px solid var(--line);border-radius:14px;padding:14px;font:12px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace}.backup-row{display:grid;grid-template-columns:1fr auto auto;gap:8px;align-items:center;padding:10px 0;border-bottom:1px solid var(--line)}.backup-row form{margin:0}.backup-row button{margin:0;padding:9px 12px}.watermark-note{padding:12px 14px;margin:10px 0;border-radius:13px;background:rgba(6,182,212,.08);border:1px solid rgba(6,182,212,.25);color:var(--muted);font-size:13px;line-height:1.5}.notice{padding:12px 14px;border:1px solid rgba(52,211,153,.35);background:rgba(52,211,153,.08);border-radius:13px;margin:12px 0}
 </style>
 </head>
 <body>
@@ -734,7 +734,7 @@ button:active{transform:translateY(0) scale(.995)}
 </nav>
 <div class="wrap">
   <div class="card page-section" id="homeSection">
-    <h1>🎬 CineDrive Studio v10.5.4</h1>
+    <h1>🎬 CineDrive Studio v10.6.1 · Smart Watermark Safe Area</h1>
     <p class="muted">Pilih menu di navigasi untuk mencari film, mengelola serial, atau melihat antrean tanpa perlu menggulir halaman panjang.</p>
     <div class="batch-help"><strong>Status penyimpanan:</strong> {% if storage.persistent %}<span class="SUCCESS">Permanen</span>{% else %}<span class="ERROR">Sementara</span>{% endif %}<br><span class="muted">Serial: {{ storage.series_path }}<br>Topic: {{ storage.topic_path }}<br>Backup: {{ storage.backup_dir }}</span>{% if storage.warning %}<p class="error">{{ storage.warning }}</p>{% endif %}</div>
   </div>
@@ -819,6 +819,8 @@ button:active{transform:translateY(0) scale(.995)}
 
 
             <label><input type="checkbox" name="watermark_enabled" style="width:auto"> Aktifkan watermark logo</label>
+            <label>Mode watermark</label><select name="watermark_mode"><option value="smart_v2" selected>Smart Watermark Safe Area — tetap di sudut pilihan</option><option value="static">Statis — tetap di satu posisi</option></select>
+            <label>Kecepatan gerak halus</label><select name="watermark_speed"><option value="slow">Lambat</option><option value="normal" selected>Normal</option><option value="fast">Cepat</option></select>
             <label>File logo PNG/WEBP/JPG/GIF</label><input type="file" name="watermark_file" accept=".png,.webp,.jpg,.jpeg,.gif">
             <label>Posisi logo</label><select name="watermark_position"><option value="top_right">Kanan atas</option><option value="top_left">Kiri atas</option><option value="bottom_right">Kanan bawah</option><option value="bottom_left">Kiri bawah</option></select>
             <label>Ukuran logo</label><select name="watermark_size"><option value="5">Kecil (5%)</option><option value="8" selected>Sedang (8%)</option><option value="10">Besar (10%)</option><option value="15">Ekstra besar (15%)</option></select>
@@ -884,6 +886,8 @@ button:active{transform:translateY(0) scale(.995)}
 
 
             <label><input type="checkbox" name="batch_watermark_enabled" style="width:auto"> Aktifkan watermark logo</label>
+            <label>Mode watermark</label><select name="batch_watermark_mode"><option value="smart_v2" selected>Smart Watermark Safe Area — tetap di sudut pilihan</option><option value="static">Statis — tetap di satu posisi</option></select>
+            <label>Kecepatan gerak halus</label><select name="batch_watermark_speed"><option value="slow">Lambat</option><option value="normal" selected>Normal</option><option value="fast">Cepat</option></select>
             <label>File logo PNG/WEBP/JPG/GIF</label><input type="file" name="batch_watermark_file" accept=".png,.webp,.jpg,.jpeg,.gif">
             <label>Posisi logo</label><select name="batch_watermark_position"><option value="top_right">Kanan atas</option><option value="top_left">Kiri atas</option><option value="bottom_right">Kanan bawah</option><option value="bottom_left">Kiri bawah</option></select>
             <label>Ukuran logo</label><select name="batch_watermark_size"><option value="5">Kecil (5%)</option><option value="8" selected>Sedang (8%)</option><option value="10">Besar (10%)</option><option value="15">Ekstra besar (15%)</option></select>
@@ -951,6 +955,8 @@ button:active{transform:translateY(0) scale(.995)}
       <label>Link subtitle Google Drive (opsional)</label><input name="manual_subtitle_drive">
 
       <label><input type="checkbox" name="manual_watermark_enabled" style="width:auto"> Aktifkan watermark logo</label>
+            <label>Mode watermark</label><select name="manual_watermark_mode"><option value="smart_v2" selected>Smart Watermark Safe Area — tetap di sudut pilihan</option><option value="static">Statis — tetap di satu posisi</option></select>
+            <label>Kecepatan gerak halus</label><select name="manual_watermark_speed"><option value="slow">Lambat</option><option value="normal" selected>Normal</option><option value="fast">Cepat</option></select>
       <label>File logo PNG/WEBP/JPG/GIF</label><input type="file" name="manual_watermark_file" accept=".png,.webp,.jpg,.jpeg,.gif">
       <label>Posisi logo</label><select name="manual_watermark_position"><option value="top_right">Kanan atas</option><option value="top_left">Kiri atas</option><option value="bottom_right">Kanan bawah</option><option value="bottom_left">Kiri bawah</option></select>
       <label>Ukuran logo</label><select name="manual_watermark_size"><option value="5">Kecil (5%)</option><option value="8" selected>Sedang (8%)</option><option value="10">Besar (10%)</option><option value="15">Ekstra besar (15%)</option></select>
@@ -1040,6 +1046,8 @@ button:active{transform:translateY(0) scale(.995)}
 
 
         <label><input type="checkbox" name="saved_watermark_enabled" style="width:auto"> Aktifkan watermark logo</label>
+            <label>Mode watermark</label><select name="saved_watermark_mode"><option value="smart_v2" selected>Smart Watermark Safe Area — tetap di sudut pilihan</option><option value="static">Statis — tetap di satu posisi</option></select>
+            <label>Kecepatan gerak halus</label><select name="saved_watermark_speed"><option value="slow">Lambat</option><option value="normal" selected>Normal</option><option value="fast">Cepat</option></select>
         <label>File logo PNG/WEBP/JPG/GIF</label><input type="file" name="saved_watermark_file" accept=".png,.webp,.jpg,.jpeg,.gif">
         <label>Posisi logo</label><select name="saved_watermark_position"><option value="top_right">Kanan atas</option><option value="top_left">Kiri atas</option><option value="bottom_right">Kanan bawah</option><option value="bottom_left">Kiri bawah</option></select>
         <label>Ukuran logo</label><select name="saved_watermark_size"><option value="5">Kecil (5%)</option><option value="8" selected>Sedang (8%)</option><option value="10">Besar (10%)</option><option value="15">Ekstra besar (15%)</option></select>
@@ -2028,6 +2036,72 @@ def ffprobe_duration(video_path: Path) -> float:
     except ValueError as exc:
         raise RuntimeError("Durasi video tidak dapat dibaca.") from exc
 
+
+def ffprobe_video_size(video_path: Path) -> tuple[int, int]:
+    proc = subprocess.run(
+        [
+            "ffprobe", "-v", "error", "-select_streams", "v:0",
+            "-show_entries", "stream=width,height",
+            "-of", "csv=p=0:s=x", str(video_path),
+        ],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(f"ffprobe resolusi gagal: {proc.stderr[-1000:]}")
+    try:
+        width_text, height_text = proc.stdout.strip().split("x", 1)
+        return max(2, int(width_text)), max(2, int(height_text))
+    except (ValueError, TypeError) as exc:
+        raise RuntimeError("Resolusi video tidak dapat dibaca.") from exc
+
+
+def detect_active_video_area(video_path: Path, duration: float) -> tuple[float, float, float, float]:
+    """Return active picture bounds as normalized x, y, width, height.
+
+    FFmpeg cropdetect is sampled at several positions. The most frequently
+    detected crop is used. If detection is uncertain, the entire frame is
+    treated as active video so encoding can continue safely.
+    """
+    frame_w, frame_h = ffprobe_video_size(video_path)
+    samples = [0.0]
+    if duration > 20:
+        samples = [max(0.0, duration * ratio) for ratio in (0.08, 0.25, 0.50, 0.75, 0.92)]
+
+    detections: list[tuple[int, int, int, int]] = []
+    crop_pattern = re.compile(r"crop=(\d+):(\d+):(\d+):(\d+)")
+    for start in samples:
+        proc = subprocess.run(
+            [
+                "ffmpeg", "-hide_banner", "-ss", f"{start:.3f}",
+                "-i", str(video_path), "-t", "2.5",
+                "-vf", "cropdetect=24:16:0", "-an", "-f", "null", "-",
+            ],
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
+        )
+        matches = crop_pattern.findall(proc.stderr or "")
+        if matches:
+            w, h, x, y = map(int, matches[-1])
+            if w >= frame_w * 0.45 and h >= frame_h * 0.45:
+                detections.append((w, h, x, y))
+
+    if not detections:
+        return 0.0, 0.0, 1.0, 1.0
+
+    # Group nearly identical detections because cropdetect rounds to blocks.
+    grouped: dict[tuple[int, int, int, int], int] = {}
+    for w, h, x, y in detections:
+        key = (round(w / 8) * 8, round(h / 8) * 8, round(x / 8) * 8, round(y / 8) * 8)
+        grouped[key] = grouped.get(key, 0) + 1
+    crop_w, crop_h, crop_x, crop_y = max(
+        grouped, key=lambda item: (grouped[item], item[0] * item[1])
+    )
+
+    crop_x = max(0, min(frame_w - 2, crop_x))
+    crop_y = max(0, min(frame_h - 2, crop_y))
+    crop_w = max(2, min(frame_w - crop_x, crop_w))
+    crop_h = max(2, min(frame_h - crop_y, crop_h))
+    return (crop_x / frame_w, crop_y / frame_h, crop_w / frame_w, crop_h / frame_h)
+
 WATERMARK_EXTENSIONS = {".png", ".webp", ".jpg", ".jpeg", ".gif"}
 WATERMARK_POSITIONS = {
     "top_right": "main_w-overlay_w-20:20",
@@ -2056,6 +2130,12 @@ def save_watermark_upload(field_name: str, work_dir: Path) -> dict[str, Any]:
     position = str(request.form.get(field_name + "_position") or "top_right")
     if position not in WATERMARK_POSITIONS:
         raise ValueError("Posisi logo tidak valid.")
+    mode = str(request.form.get(field_name + "_mode") or "smart_v2")
+    if mode not in {"static", "smart_v2"}:
+        mode = "smart_v2"
+    speed = str(request.form.get(field_name + "_speed") or "normal")
+    if speed not in {"slow", "normal", "fast"}:
+        speed = "normal"
 
     destination = work_dir / f"watermark{ext}"
     upload.save(destination)
@@ -2063,9 +2143,11 @@ def save_watermark_upload(field_name: str, work_dir: Path) -> dict[str, Any]:
         "watermark_enabled": True,
         "watermark_path": str(destination),
         "watermark_position": position,
+        "watermark_mode": mode,
+        "watermark_speed": speed,
         "watermark_size": width_pct,
         "watermark_opacity": opacity_pct,
-        "watermark_info": f"Logo {upload.filename} · {position} · {width_pct}% · opacity {opacity_pct}%",
+        "watermark_info": f"Logo {upload.filename} · {'Smart Safe Area' if mode == 'smart_v2' else 'Statis Safe Area'} · {width_pct}% · opacity {opacity_pct}%",
     }
 
 def copy_watermark_config(source: dict[str, Any], work_dir: Path) -> dict[str, Any]:
@@ -2127,14 +2209,62 @@ def process_video(
 
     output_label = "base"
     if use_watermark:
-        width = max(3, min(40, int(watermark.get("watermark_size") or 8))) / 100
+        active_x, active_y, active_w, active_h = detect_active_video_area(input_path, duration)
+        width = max(3, min(25, int(watermark.get("watermark_size") or 8))) / 100
         opacity = max(10, min(100, int(watermark.get("watermark_opacity") or 35))) / 100
-        position = WATERMARK_POSITIONS.get(str(watermark.get("watermark_position") or "top_right"), WATERMARK_POSITIONS["top_right"])
+        selected_position = str(watermark.get("watermark_position") or "top_right")
+        mode = str(watermark.get("watermark_mode") or "smart_v2")
+        speed = str(watermark.get("watermark_speed") or "normal")
+        periods = {"slow": (83, 107), "normal": (53, 71), "fast": (31, 43)}
+        period_x, period_y = periods.get(speed, periods["normal"])
+
+        # Bounds are calculated from the detected picture area, not the full
+        # encoded frame. This keeps the logo away from cinematic black bars.
+        left = f"main_w*{active_x:.6f}"
+        top = f"main_h*{active_y:.6f}"
+        right = f"main_w*{active_x + active_w:.6f}"
+        bottom = f"main_h*{active_y + active_h:.6f}"
+        margin = "max(18,min(main_w,main_h)*0.018)"
+
+        if selected_position == "top_left":
+            base_x, base_y = f"{left}+{margin}", f"{top}+{margin}"
+            dx_sign, dy_sign = 1, 1
+        elif selected_position == "bottom_left":
+            base_x, base_y = f"{left}+{margin}", f"{bottom}-overlay_h-{margin}"
+            dx_sign, dy_sign = 1, -1
+        elif selected_position == "bottom_right":
+            base_x, base_y = f"{right}-overlay_w-{margin}", f"{bottom}-overlay_h-{margin}"
+            dx_sign, dy_sign = -1, -1
+        else:
+            base_x, base_y = f"{right}-overlay_w-{margin}", f"{top}+{margin}"
+            dx_sign, dy_sign = -1, 1
+
+        if mode == "smart_v2":
+            # Subtle movement remains around the selected corner. It never
+            # alternates corners and is clamped inside the active picture.
+            motion = "max(6,min(main_w,main_h)*0.012)"
+            raw_x = f"({base_x})+({dx_sign})*({motion})*(0.5+0.5*sin(2*PI*t/{period_x}))"
+            raw_y = f"({base_y})+({dy_sign})*({motion})*(0.5+0.5*sin(2*PI*t/{period_y}+PI/2))"
+            x_expr = f"max({left}+{margin},min({right}-overlay_w-{margin},{raw_x}))"
+            y_expr = f"max({top}+{margin},min({bottom}-overlay_h-{margin},{raw_y}))"
+            overlay_expr = f"x='{x_expr}':y='{y_expr}':eval=frame:shortest=1"
+        else:
+            x_expr = f"max({left}+{margin},min({right}-overlay_w-{margin},{base_x}))"
+            y_expr = f"max({top}+{margin},min({bottom}-overlay_h-{margin},{base_y}))"
+            overlay_expr = f"x='{x_expr}':y='{y_expr}':eval=init:shortest=1"
+
         filters.extend([
-            f"[1:v][base]scale2ref=w=main_w*{width:.4f}:h=-1[logo][base2]",
+            f"[1:v][base]scale2ref=w=main_w*{active_w * width:.6f}:h=-1[logo][base2]",
             f"[logo]format=rgba,colorchannelmixer=aa={opacity:.3f}[wm]",
-            f"[base2][wm]overlay={position}:shortest=1[vout]",
+            f"[base2][wm]overlay={overlay_expr}[vout]",
         ])
+        set_job(
+            job_id,
+            watermark_info=(
+                f"{watermark.get('watermark_info') or 'Logo'} · Safe area "
+                f"{active_w * 100:.1f}%×{active_h * 100:.1f}% · sudut tetap"
+            ),
+        )
         output_label = "vout"
 
     common = base_cmd + ["-filter_complex", ";".join(filters), "-map", f"[{output_label}]", "-map", "0:a?"]
@@ -2509,7 +2639,7 @@ LANDING_HTML = r"""
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#070910">
-<title>CINEMAXX1 · CineDrive Studio v10.5.4</title>
+<title>CINEMAXX1 · CineDrive Studio v10.6.1 · Smart Watermark Safe Area</title>
 <style>
 :root{color-scheme:dark;--bg:#06070b;--panel:rgba(15,17,24,.78);--line:rgba(255,255,255,.11);--gold:#f7c75f;--gold2:#fff1ad;--text:#fff;--muted:#a8acb8;--ok:#43e39f}
 *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;min-height:100vh;font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;color:var(--text);background:#06070b;overflow-x:hidden}
@@ -2529,9 +2659,9 @@ body:before{content:"";position:fixed;inset:0;background:radial-gradient(circle 
 <header class="top"><div class="brand"><div class="logo">🎬</div><div class="brand-name">CINEMAXX1</div></div><div class="badge"><span class="dot"></span>SERVER ONLINE</div></header>
 <section class="hero"><div><div class="eyebrow">Google Drive → Telegram</div><h1>CineDrive <span>Studio</span></h1><p class="lead">Kelola film, serial, subtitle, watermark, encoding 1080p, antrean, dan publikasi Telegram dari satu dashboard.</p><div class="actions"><a class="btn primary" href="#login">Buka Panel Admin →</a><a class="btn" href="/health">Status API</a></div></div>
 <div class="login" id="login"><h2>Masuk ke panel</h2><p>Masukkan SECRET_KEY Railway untuk membuka dashboard pengelolaan.</p><form method="get" action="/panel"><label>SECRET KEY</label><input type="password" name="key" autocomplete="current-password" placeholder="Masukkan kunci akses" required><button type="submit">Masuk ke Dashboard</button></form><p class="tiny">Kunci dipakai untuk autentikasi panel dan tidak disimpan oleh halaman ini.</p></div></section>
-<section class="stats"><div class="stat"><span>SERIAL TERSIMPAN</span><b>{{ stats.series }}</b></div><div class="stat"><span>TOTAL EPISODE</span><b>{{ stats.episodes }}</b></div><div class="stat"><span>ANTREAN AKTIF</span><b>{{ stats.active_jobs }}</b></div><div class="stat"><span>VERSI APLIKASI</span><b>10.5.4</b></div></section>
+<section class="stats"><div class="stat"><span>SERIAL TERSIMPAN</span><b>{{ stats.series }}</b></div><div class="stat"><span>TOTAL EPISODE</span><b>{{ stats.episodes }}</b></div><div class="stat"><span>ANTREAN AKTIF</span><b>{{ stats.active_jobs }}</b></div><div class="stat"><span>VERSI APLIKASI</span><b>10.6</b></div></section>
 <section class="features"><article class="feature"><i>🎞️</i><h3>Encoding Telegram</h3><p>H.265 hemat ukuran dengan fallback H.264 dan target hasil di bawah 1,5 GB.</p></article><article class="feature"><i>📺</i><h3>Pengelolaan Serial</h3><p>Tambah episode, perbarui posting utama, pulihkan data, dan kelola tombol episode.</p></article><article class="feature"><i>🗄️</i><h3>Data Permanen</h3><p>Backup, ekspor, impor, dan pemulihan data yang tersimpan pada Railway Volume.</p></article></section>
-<footer class="foot"><span>© 2026 CINEMAXX1</span><span>CineDrive Studio v10.5.4 · Railway</span></footer>
+<footer class="foot"><span>© 2026 CINEMAXX1</span><span>CineDrive Studio v10.6.1 · Smart Watermark Safe Area · Railway</span></footer>
 </main></body></html>
 """
 
@@ -2833,7 +2963,7 @@ def batch_enqueue():
             episode_lines,
             subtitle_mode,
         )
-        batch_logo_dir = Path(tempfile.mkdtemp(prefix="watermark-batch-v10-4-"))
+        batch_logo_dir = Path(tempfile.mkdtemp(prefix="watermark-batch-v10-6-1-"))
         try:
             batch_watermark = save_watermark_upload("batch_watermark", batch_logo_dir)
         except Exception:
@@ -2869,7 +2999,7 @@ def batch_enqueue():
                 job_id = uuid.uuid4().hex[:12]
                 work_dir = Path(
                     tempfile.mkdtemp(
-                        prefix=f"drive-telegram-v10-5-1-{job_id}-"
+                        prefix=f"drive-telegram-v10-6-{job_id}-"
                     )
                 )
 
@@ -3121,7 +3251,7 @@ def add_saved_episode():
         with queue_condition:
             active=sum(1 for i in jobs.values() if i["state"] in {"QUEUED","DOWNLOADING","PROCESSING","UPLOADING"})
             if active>=MAX_QUEUE: raise ValueError(f"Antrean penuh. Maksimal {MAX_QUEUE}")
-            jid=uuid.uuid4().hex[:12]; wd=Path(tempfile.mkdtemp(prefix=f"drive-telegram-v10-5-1-{jid}-"))
+            jid=uuid.uuid4().hex[:12]; wd=Path(tempfile.mkdtemp(prefix=f"drive-telegram-v10-6-{jid}-"))
             watermark_config=save_watermark_upload("saved_watermark",wd)
             chat=str(series.get("target_chat_id") or CHANNEL_ID); thread=int(series.get("message_thread_id") or 0)
             jobs[jid]={"id":jid,"file_id":video_id,"title":meta["title"],"metadata":meta,"tmdb_id":int(series.get("tmdb_id") or 0),"season_number":int(series.get("season_number") or 1),"episode_number":ep,"target_chat_id":chat,"message_thread_id":thread,"topic_name":str(series.get("topic_name") or topic_name_from_id(thread,chat)),"extra_caption":str(request.form.get("saved_extra_caption") or "").strip(),"subtitle_mode":mode,"uploaded_subtitle":"","subtitle_drive_file_id":sub_id,"public_folder_id":public_folder_id,"subtitle_info":"Menunggu pemeriksaan","work_dir":str(wd),"state":"QUEUED","message":"Menunggu giliran.","created_at":now_ts(),"started_at":None,"finished_at":None,"downloaded_bytes":0,"total_bytes":0,"file_size_bytes":0,"message_id":None,"error":None,"stage_progress":0.0,"overall_progress":0.0,"progress_detail":"Menunggu giliran.","eta_seconds":0,"eta_human":"-","manual_mode":bool(series.get("manual")),"saved_series_key":series_key,**watermark_config,**parse_encode_config("saved_")}
@@ -3157,7 +3287,7 @@ def manual_enqueue():
             active_count = sum(1 for item in jobs.values() if item["state"] in {"QUEUED","DOWNLOADING","PROCESSING","UPLOADING"})
             if active_count >= MAX_QUEUE: raise ValueError(f"Antrean penuh. Maksimal {MAX_QUEUE}.")
             job_id = uuid.uuid4().hex[:12]
-            work_dir = Path(tempfile.mkdtemp(prefix=f"drive-telegram-v10-5-1-{job_id}-"))
+            work_dir = Path(tempfile.mkdtemp(prefix=f"drive-telegram-v10-6-{job_id}-"))
             watermark_config = save_watermark_upload("manual_watermark", work_dir)
             manual_media_type = str(request.form.get("manual_media_type") or "movie")
             season_number = int(request.form.get("manual_season_number") or "1") if manual_media_type == "tv" else None
@@ -3230,7 +3360,7 @@ def enqueue():
             return jsonify({"success": False, "error": f"Antrean penuh. Maksimal {MAX_QUEUE} pekerjaan."}), 429
 
         job_id = uuid.uuid4().hex[:12]
-        work_dir = Path(tempfile.mkdtemp(prefix=f"drive-telegram-v10-5-1-{job_id}-"))
+        work_dir = Path(tempfile.mkdtemp(prefix=f"drive-telegram-v10-6-{job_id}-"))
         try:
             watermark_config = save_watermark_upload("watermark", work_dir)
         except Exception:

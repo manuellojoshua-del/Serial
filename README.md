@@ -1,4 +1,27 @@
-# Google Drive → Telegram v10.5.4
+# Google Drive → Telegram v10.6 — Smart Watermark v2
+
+Versi ini menambahkan watermark logo yang benar-benar ditanam ke gambar film saat proses FFmpeg. Logo tetap terlihat ketika video diputar, diunduh, atau diteruskan.
+
+## Smart Watermark v2
+
+- Mode **Smart v2**: logo bergerak halus di area aman video.
+- Mode **Statis**: logo tetap di kanan atas, kiri atas, kanan bawah, atau kiri bawah.
+- Pilihan kecepatan lambat, normal, dan cepat.
+- Ukuran logo 5%, 8%, 10%, atau 15% dari lebar video.
+- Transparansi 20% sampai 100%.
+- Mendukung PNG, WEBP, JPG, JPEG, dan GIF.
+- Logo digabung permanen ke hasil video, bukan hanya ditampilkan di panel.
+- Berlaku untuk film TMDB, batch episode, mode manual, dan episode serial tersimpan.
+- Tetap kompatibel dengan subtitle dan target video Telegram di bawah 1,5 GB.
+
+## Cara memakai
+
+1. Buka film atau serial yang akan diproses.
+2. Centang **Aktifkan watermark logo**.
+3. Pilih **Smart Watermark v2 — bergerak halus**.
+4. Upload logo transparan PNG/WEBP/GIF.
+5. Pilih ukuran 8% dan transparansi 35%–50% sebagai pengaturan awal.
+6. Tambahkan video ke antrean. Watermark akan menjadi bagian permanen dari video hasil encode.
 
 Versi ini memperbaiki kegagalan FFmpeg/H.265 pada Railway dan VPS dengan resource terbatas.
 
@@ -75,3 +98,13 @@ Semua operasi perubahan data membuat backup terlebih dahulu. Volume Railway haru
 - Form masuk panel menggunakan `SECRET_KEY` dan mengarah ke `/panel`.
 - Tombol status API tersedia melalui `/health`.
 - Panel dan seluruh fitur v10.5.3 tetap dipertahankan.
+
+## v10.6.1 — Smart Watermark Safe Area
+
+- Logo dibakar permanen ke gambar video hasil encode.
+- FFmpeg mendeteksi area gambar aktif dengan `cropdetect` pada beberapa bagian video.
+- Posisi watermark dihitung terhadap area film, bukan seluruh frame, sehingga tidak masuk ke bar hitam sinematik/letterbox.
+- Logo tetap berada pada sudut yang dipilih: kanan atas, kiri atas, kanan bawah, atau kiri bawah.
+- Mode Smart hanya memberi gerakan kecil dan halus di sekitar sudut pilihan; logo tidak berganti sudut.
+- Ukuran logo dihitung dari lebar area gambar aktif agar konsisten pada film 16:9, 21:9, 2.35:1, 4:3, dan format lain.
+- Jika bar hitam tidak dapat dideteksi dengan yakin, aplikasi memakai seluruh frame agar proses encode tetap berjalan.
