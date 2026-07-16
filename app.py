@@ -620,7 +620,7 @@ PANEL_HTML = r"""
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>CineDrive Studio v10.5.3</title>
+<title>CineDrive Studio v10.5.4</title>
 
 <style>
 :root{
@@ -734,7 +734,7 @@ button:active{transform:translateY(0) scale(.995)}
 </nav>
 <div class="wrap">
   <div class="card page-section" id="homeSection">
-    <h1>🎬 CineDrive Studio v10.5.3</h1>
+    <h1>🎬 CineDrive Studio v10.5.4</h1>
     <p class="muted">Pilih menu di navigasi untuk mencari film, mengelola serial, atau melihat antrean tanpa perlu menggulir halaman panjang.</p>
     <div class="batch-help"><strong>Status penyimpanan:</strong> {% if storage.persistent %}<span class="SUCCESS">Permanen</span>{% else %}<span class="ERROR">Sementara</span>{% endif %}<br><span class="muted">Serial: {{ storage.series_path }}<br>Topic: {{ storage.topic_path }}<br>Backup: {{ storage.backup_dir }}</span>{% if storage.warning %}<p class="error">{{ storage.warning }}</p>{% endif %}</div>
   </div>
@@ -2500,9 +2500,62 @@ def data_management_context(key: str) -> dict[str, Any]:
         st=p.stat(); backup_items.append({"name":p.name,"size":human_bytes(st.st_size),"modified":time.strftime("%d-%m-%Y %H:%M:%S",time.localtime(st.st_mtime))})
     return {"data_stats":{"series_count":len(series) if isinstance(series,dict) else 0,"episode_count":episode_count,"topic_count":len(topics) if isinstance(topics,list) else 0,"backup_count":len(backups),"free_space":free},"data_files":files,"backup_files":backup_items}
 
+
+
+LANDING_HTML = r"""
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#070910">
+<title>CINEMAXX1 · CineDrive Studio v10.5.4</title>
+<style>
+:root{color-scheme:dark;--bg:#06070b;--panel:rgba(15,17,24,.78);--line:rgba(255,255,255,.11);--gold:#f7c75f;--gold2:#fff1ad;--text:#fff;--muted:#a8acb8;--ok:#43e39f}
+*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;min-height:100vh;font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;color:var(--text);background:#06070b;overflow-x:hidden}
+body:before{content:"";position:fixed;inset:0;background:radial-gradient(circle at 18% 10%,rgba(247,199,95,.17),transparent 30%),radial-gradient(circle at 82% 22%,rgba(112,71,255,.16),transparent 31%),linear-gradient(180deg,rgba(0,0,0,.12),#06070b 72%);pointer-events:none}
+.grid{position:fixed;inset:0;opacity:.18;background-image:linear-gradient(rgba(255,255,255,.035) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.035) 1px,transparent 1px);background-size:38px 38px;mask-image:linear-gradient(to bottom,#000,transparent 80%)}
+.shell{position:relative;z-index:1;width:min(1120px,92%);margin:auto;padding:26px 0 42px}
+.top{display:flex;align-items:center;justify-content:space-between;gap:16px}.brand{display:flex;align-items:center;gap:12px;font-weight:900;letter-spacing:.08em}.logo{width:45px;height:45px;border-radius:14px;display:grid;place-items:center;background:linear-gradient(145deg,var(--gold2),#bc7925);color:#160e03;box-shadow:0 10px 30px rgba(247,199,95,.23);font-size:23px}.badge{padding:8px 12px;border:1px solid rgba(67,227,159,.24);background:rgba(67,227,159,.08);border-radius:999px;color:#91f4c8;font-size:12px;font-weight:800}.dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--ok);box-shadow:0 0 12px var(--ok);margin-right:7px}
+.hero{min-height:66vh;display:grid;grid-template-columns:1.2fr .8fr;align-items:center;gap:46px;padding:70px 0 44px}.eyebrow{color:var(--gold);font-size:12px;font-weight:900;letter-spacing:.2em;text-transform:uppercase}.hero h1{font-size:clamp(45px,8vw,88px);line-height:.93;letter-spacing:-.065em;margin:16px 0 22px;max-width:760px}.hero h1 span{background:linear-gradient(100deg,#fff 10%,var(--gold2) 55%,#d79b36);background-clip:text;-webkit-background-clip:text;color:transparent}.lead{font-size:clamp(16px,2vw,20px);line-height:1.7;color:var(--muted);max-width:680px;margin:0 0 30px}
+.actions{display:flex;flex-wrap:wrap;gap:12px}.btn{display:inline-flex;align-items:center;justify-content:center;gap:9px;min-height:50px;padding:0 19px;border-radius:14px;text-decoration:none;font-weight:850;border:1px solid var(--line);color:#fff;background:rgba(255,255,255,.05);transition:.2s}.btn:hover{transform:translateY(-2px);border-color:rgba(247,199,95,.5)}.btn.primary{color:#1d1303;border:0;background:linear-gradient(135deg,var(--gold2),#d58b26);box-shadow:0 13px 35px rgba(213,139,38,.22)}
+.login{padding:23px;border:1px solid var(--line);border-radius:24px;background:linear-gradient(145deg,rgba(24,25,33,.9),rgba(10,11,16,.83));box-shadow:0 30px 80px rgba(0,0,0,.35);backdrop-filter:blur(18px)}.login h2{margin:0 0 7px;font-size:23px}.login p{color:var(--muted);font-size:14px;line-height:1.55;margin:0 0 18px}.login label{display:block;font-size:12px;font-weight:800;color:#d7d8de;margin:0 0 7px}.login input{width:100%;border:1px solid var(--line);background:#090a0f;color:#fff;padding:14px;border-radius:13px;outline:none;font:inherit}.login input:focus{border-color:var(--gold);box-shadow:0 0 0 4px rgba(247,199,95,.09)}.login button{width:100%;margin-top:12px;border:0;border-radius:13px;padding:14px;font:inherit;font-weight:900;color:#1a1103;background:linear-gradient(135deg,var(--gold2),#d58b26);cursor:pointer}.tiny{margin-top:13px!important;font-size:11px!important;color:#737784!important}
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:13px;margin:18px 0 44px}.stat{padding:18px;border:1px solid var(--line);border-radius:18px;background:rgba(255,255,255,.035);backdrop-filter:blur(10px)}.stat b{display:block;font-size:26px;margin-top:7px}.stat span{font-size:12px;color:var(--muted);font-weight:750}.features{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}.feature{padding:22px;border-radius:20px;border:1px solid var(--line);background:rgba(255,255,255,.03)}.feature i{font-style:normal;font-size:26px}.feature h3{margin:13px 0 7px}.feature p{margin:0;color:var(--muted);line-height:1.6;font-size:14px}.foot{display:flex;justify-content:space-between;gap:20px;color:#737784;font-size:12px;margin-top:44px;padding-top:22px;border-top:1px solid var(--line)}
+@media(max-width:820px){.hero{grid-template-columns:1fr;padding:52px 0 30px;gap:28px}.hero h1{font-size:55px}.stats{grid-template-columns:repeat(2,1fr)}.features{grid-template-columns:1fr}.top .brand-name{font-size:13px}}
+@media(max-width:480px){.shell{width:91%}.hero h1{font-size:46px}.stats{gap:9px}.stat{padding:14px}.stat b{font-size:22px}.foot{flex-direction:column}.badge{font-size:10px;padding:7px 9px}}
+</style>
+</head>
+<body><div class="grid"></div><main class="shell">
+<header class="top"><div class="brand"><div class="logo">🎬</div><div class="brand-name">CINEMAXX1</div></div><div class="badge"><span class="dot"></span>SERVER ONLINE</div></header>
+<section class="hero"><div><div class="eyebrow">Google Drive → Telegram</div><h1>CineDrive <span>Studio</span></h1><p class="lead">Kelola film, serial, subtitle, watermark, encoding 1080p, antrean, dan publikasi Telegram dari satu dashboard.</p><div class="actions"><a class="btn primary" href="#login">Buka Panel Admin →</a><a class="btn" href="/health">Status API</a></div></div>
+<div class="login" id="login"><h2>Masuk ke panel</h2><p>Masukkan SECRET_KEY Railway untuk membuka dashboard pengelolaan.</p><form method="get" action="/panel"><label>SECRET KEY</label><input type="password" name="key" autocomplete="current-password" placeholder="Masukkan kunci akses" required><button type="submit">Masuk ke Dashboard</button></form><p class="tiny">Kunci dipakai untuk autentikasi panel dan tidak disimpan oleh halaman ini.</p></div></section>
+<section class="stats"><div class="stat"><span>SERIAL TERSIMPAN</span><b>{{ stats.series }}</b></div><div class="stat"><span>TOTAL EPISODE</span><b>{{ stats.episodes }}</b></div><div class="stat"><span>ANTREAN AKTIF</span><b>{{ stats.active_jobs }}</b></div><div class="stat"><span>VERSI APLIKASI</span><b>10.5.4</b></div></section>
+<section class="features"><article class="feature"><i>🎞️</i><h3>Encoding Telegram</h3><p>H.265 hemat ukuran dengan fallback H.264 dan target hasil di bawah 1,5 GB.</p></article><article class="feature"><i>📺</i><h3>Pengelolaan Serial</h3><p>Tambah episode, perbarui posting utama, pulihkan data, dan kelola tombol episode.</p></article><article class="feature"><i>🗄️</i><h3>Data Permanen</h3><p>Backup, ekspor, impor, dan pemulihan data yang tersimpan pada Railway Volume.</p></article></section>
+<footer class="foot"><span>© 2026 CINEMAXX1</span><span>CineDrive Studio v10.5.4 · Railway</span></footer>
+</main></body></html>
+"""
+
 @app.get("/")
 def home():
-    return jsonify({"success": True, "message": "Google Drive Telegram Railway v10.5.3 aktif", "panel": "/panel?key=SECRET_KEY", "status": "/api/jobs?key=SECRET_KEY", "series_search": "/api/series/search?key=SECRET_KEY&q=judul"})
+    series = load_series_store()
+    series_count = len(series) if isinstance(series, dict) else 0
+    episode_count = sum(
+        len((item or {}).get("episodes") or {})
+        for item in series.values()
+    ) if isinstance(series, dict) else 0
+    with queue_lock:
+        active_jobs = sum(
+            1 for item in jobs.values()
+            if item.get("state") in {"QUEUED", "DOWNLOADING", "PROCESSING", "UPLOADING"}
+        )
+    return render_template_string(
+        LANDING_HTML,
+        stats={
+            "series": series_count,
+            "episodes": episode_count,
+            "active_jobs": active_jobs,
+        },
+    )
 
 @app.get("/health")
 def health():

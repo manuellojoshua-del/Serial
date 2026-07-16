@@ -1,4 +1,4 @@
-# Google Drive → Telegram v10.5.3
+# Google Drive → Telegram v10.5.4
 
 Versi ini memperbaiki kegagalan FFmpeg/H.265 pada Railway dan VPS dengan resource terbatas.
 
@@ -51,7 +51,7 @@ docker compose up -d --build
 
 Data serial tetap aman selama folder `/data` atau volume host tidak dihapus.
 
-## Fitur baru v10.5.3 — Manajemen Data
+## Fitur baru v10.5.4 — Manajemen Data
 
 Buka menu **Data** pada navigasi panel untuk:
 
@@ -66,3 +66,12 @@ Buka menu **Data** pada navigasi panel untuk:
 - membersihkan hasil scan setelah backup otomatis dibuat.
 
 Semua operasi perubahan data membuat backup terlebih dahulu. Volume Railway harus tetap di-mount ke `/data`.
+
+
+## Fitur baru v10.5.4 — Landing Page CINEMAXX1
+
+- Route `/` sekarang menampilkan landing page CINEMAXX1 responsif, bukan JSON mentah.
+- Menampilkan status server, jumlah serial, jumlah episode, antrean aktif, dan versi aplikasi.
+- Form masuk panel menggunakan `SECRET_KEY` dan mengarah ke `/panel`.
+- Tombol status API tersedia melalui `/health`.
+- Panel dan seluruh fitur v10.5.3 tetap dipertahankan.
