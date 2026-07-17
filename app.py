@@ -41,10 +41,22 @@ FFMPEG_CRF = os.getenv("FFMPEG_CRF", "23")
 TELEGRAM_TARGET_GB = float(os.getenv("TELEGRAM_TARGET_GB", "1.45"))
 TELEGRAM_AUDIO_KBPS = int(os.getenv("TELEGRAM_AUDIO_KBPS", "128"))
 TELEGRAM_VIDEO_CODEC = os.getenv("TELEGRAM_VIDEO_CODEC", "libx265")
-TELEGRAM_X265_PRESET = os.getenv("TELEGRAM_X265_PRESET", "veryfast")
-TELEGRAM_X265_THREADS = max(1, int(os.getenv("TELEGRAM_X265_THREADS", "2")))
-TELEGRAM_X265_FRAME_THREADS = max(1, int(os.getenv("TELEGRAM_X265_FRAME_THREADS", "1")))
-TELEGRAM_X265_WPP = os.getenv("TELEGRAM_X265_WPP", "0").strip().lower() in {"1", "true", "yes", "on"}
+TELEGRAM_X265_PRESET = os.getenv("TELEGRAM_X265_PRESET", "superfast").strip() or "superfast"
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)).strip())
+    except (TypeError, ValueError):
+        return default
+
+CPU_COUNT = max(1, os.cpu_count() or 1)
+# Nilai 0 berarti otomatis. Batas default menjaga Railway shared CPU/RAM tetap stabil.
+_configured_threads = _env_int("TELEGRAM_X265_THREADS", 0)
+_configured_frame_threads = _env_int("TELEGRAM_X265_FRAME_THREADS", 0)
+TELEGRAM_X265_THREADS = max(1, min(8, _configured_threads or CPU_COUNT))
+TELEGRAM_X265_FRAME_THREADS = max(1, min(3, _configured_frame_threads or max(1, min(2, CPU_COUNT // 2))))
+TELEGRAM_X265_WPP = os.getenv("TELEGRAM_X265_WPP", "1").strip().lower() in {"1", "true", "yes", "on"}
+TELEGRAM_X265_TURBO = os.getenv("TELEGRAM_X265_TURBO", "1").strip().lower() in {"1", "true", "yes", "on"}
 TELEGRAM_FALLBACK_H264 = os.getenv("TELEGRAM_FALLBACK_H264", "1").strip().lower() in {"1", "true", "yes", "on"}
 
 DEFAULT_THREAD_ID = int(os.getenv("DEFAULT_THREAD_ID", "0") or "0")
@@ -620,7 +632,7 @@ PANEL_HTML = r"""
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>CineDrive Studio v10.6.1 · Smart Watermark Safe Area</title>
+<title>CineDrive Studio v10.6.1 Turbo · Smart Watermark Safe Area</title>
 
 <style>
 :root{
@@ -734,7 +746,7 @@ button:active{transform:translateY(0) scale(.995)}
 </nav>
 <div class="wrap">
   <div class="card page-section" id="homeSection">
-    <h1>🎬 CineDrive Studio v10.6.1 · Smart Watermark Safe Area</h1>
+    <h1>🎬 CineDrive Studio v10.6.1 Turbo · Smart Watermark Safe Area</h1>
     <p class="muted">Pilih menu di navigasi untuk mencari film, mengelola serial, atau melihat antrean tanpa perlu menggulir halaman panjang.</p>
     <div class="batch-help"><strong>Status penyimpanan:</strong> {% if storage.persistent %}<span class="SUCCESS">Permanen</span>{% else %}<span class="ERROR">Sementara</span>{% endif %}<br><span class="muted">Serial: {{ storage.series_path }}<br>Topic: {{ storage.topic_path }}<br>Backup: {{ storage.backup_dir }}</span>{% if storage.warning %}<p class="error">{{ storage.warning }}</p>{% endif %}</div>
   </div>
@@ -2277,15 +2289,23 @@ def process_video(
         log_path = output_path.parent / ("ffmpeg-fallback.log" if fallback else "ffmpeg.log")
         cmd = list(common)
         if codec == "libx265":
+            turbo_params = (
+                "rc-lookahead=10:bframes=2:ref=2:subme=1:me=hex:"
+                "aq-mode=1:rd=2:psy-rd=1.0"
+                if TELEGRAM_X265_TURBO else ""
+            )
             x265_params = (
                 f"pools={TELEGRAM_X265_THREADS}:"
                 f"frame-threads={TELEGRAM_X265_FRAME_THREADS}:"
                 f"wpp={1 if TELEGRAM_X265_WPP else 0}:"
+                f"{turbo_params + ':' if turbo_params else ''}"
                 "log-level=error"
             )
             set_job(job_id, encode_info=(
-                f"H.265 1080p · target {target_gb:.2f} GB · video {video_kbps} kbps · "
-                f"threads {TELEGRAM_X265_THREADS}/{TELEGRAM_X265_FRAME_THREADS}"
+                f"H.265 Turbo 1080p · preset {TELEGRAM_X265_PRESET} · target {target_gb:.2f} GB · "
+                f"video {video_kbps} kbps · CPU {CPU_COUNT} · threads "
+                f"{TELEGRAM_X265_THREADS}/{TELEGRAM_X265_FRAME_THREADS} · WPP "
+                f"{'aktif' if TELEGRAM_X265_WPP else 'mati'}"
             ))
             cmd += [
                 "-c:v", "libx265", "-preset", TELEGRAM_X265_PRESET,
@@ -2329,7 +2349,7 @@ def process_video(
                     job_id, "PROCESSING", pct,
                     detail=f"{human_time(processed)} / {human_time(duration)} · {speed_ratio:.2f}x",
                     eta_seconds=eta,
-                    message=f"Mengompres 1080p dengan {mode_text}.",
+                    message=f"Mengompres 1080p dengan {mode_text}{' Turbo' if codec == 'libx265' and TELEGRAM_X265_TURBO else ''}.",
                     processed_seconds=processed,
                     duration_seconds=duration,
                 )

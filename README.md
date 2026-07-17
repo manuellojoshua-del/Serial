@@ -108,3 +108,33 @@ Semua operasi perubahan data membuat backup terlebih dahulu. Volume Railway haru
 - Mode Smart hanya memberi gerakan kecil dan halus di sekitar sudut pilihan; logo tidak berganti sudut.
 - Ukuran logo dihitung dari lebar area gambar aktif agar konsisten pada film 16:9, 21:9, 2.35:1, 4:3, dan format lain.
 - Jika bar hitam tidak dapat dideteksi dengan yakin, aplikasi memakai seluruh frame agar proses encode tetap berjalan.
+
+## v10.6.1 Turbo
+
+Peningkatan khusus untuk mempercepat encode H.265 1080p di Railway:
+
+- Preset bawaan H.265 berubah menjadi `superfast`.
+- Jumlah thread otomatis mengikuti CPU container (`TELEGRAM_X265_THREADS=0`).
+- Frame thread otomatis dan dibatasi agar penggunaan RAM tetap stabil.
+- WPP diaktifkan untuk meningkatkan paralelisme encode.
+- Parameter x265 Turbo memakai lookahead, B-frame, reference frame, dan motion search yang lebih ringan.
+- Panel menampilkan jumlah CPU, thread, preset, dan status WPP yang benar-benar digunakan.
+- Smart Watermark Safe Area, subtitle, target 1,45 GB, fallback H.264, dan seluruh fitur serial tetap dipertahankan.
+
+Variabel Railway yang direkomendasikan:
+
+```env
+TELEGRAM_X265_PRESET=superfast
+TELEGRAM_X265_THREADS=0
+TELEGRAM_X265_FRAME_THREADS=0
+TELEGRAM_X265_WPP=1
+TELEGRAM_X265_TURBO=1
+TELEGRAM_FALLBACK_H264=1
+```
+
+Jika Railway menunjukkan penggunaan RAM tinggi atau service restart, gunakan:
+
+```env
+TELEGRAM_X265_THREADS=2
+TELEGRAM_X265_FRAME_THREADS=1
+```
