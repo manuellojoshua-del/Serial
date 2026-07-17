@@ -99,7 +99,7 @@ Semua operasi perubahan data membuat backup terlebih dahulu. Volume Railway haru
 - Tombol status API tersedia melalui `/health`.
 - Panel dan seluruh fitur v10.5.3 tetap dipertahankan.
 
-## v10.6.1 — Smart Watermark Safe Area
+## v10.6.2 — Smart Watermark Safe Area
 
 - Logo dibakar permanen ke gambar video hasil encode.
 - FFmpeg mendeteksi area gambar aktif dengan `cropdetect` pada beberapa bagian video.
@@ -109,7 +109,7 @@ Semua operasi perubahan data membuat backup terlebih dahulu. Volume Railway haru
 - Ukuran logo dihitung dari lebar area gambar aktif agar konsisten pada film 16:9, 21:9, 2.35:1, 4:3, dan format lain.
 - Jika bar hitam tidak dapat dideteksi dengan yakin, aplikasi memakai seluruh frame agar proses encode tetap berjalan.
 
-## v10.6.1 Turbo
+## v10.6.2 Turbo
 
 Peningkatan khusus untuk mempercepat encode H.265 1080p di Railway:
 
@@ -138,3 +138,13 @@ Jika Railway menunjukkan penggunaan RAM tinggi atau service restart, gunakan:
 TELEGRAM_X265_THREADS=2
 TELEGRAM_X265_FRAME_THREADS=1
 ```
+
+## v10.6.2 — Detail TMDB Episode & Ganti Postingan Indeks
+
+- Penambahan episode dari menu **Tambah Episode** mengambil ulang detail episode dari TMDB.
+- Caption video episode berisi judul resmi, tanggal tayang, rating, genre, pemeran, kru, dan sinopsis TMDB.
+- Setelah episode berhasil dikirim, aplikasi membuat posting indeks serial terbaru dengan seluruh tombol episode.
+- Postingan indeks lama kemudian dihapus otomatis agar channel tidak memiliki daftar episode ganda.
+- Penghapusan dilakukan setelah posting baru berhasil dibuat, sehingga daftar serial tidak hilang jika pengiriman posting baru gagal.
+- Untuk serial manual atau ketika TMDB sedang gagal diakses, aplikasi memakai metadata serial tersimpan sebagai fallback.
+- Bot harus menjadi administrator dan memiliki izin **Delete Messages** di channel atau supergroup tujuan.

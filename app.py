@@ -455,15 +455,19 @@ def create_or_update_series_index(
     data: dict[str, Any],
     episode_message_id: int,
 ) -> int:
+    """Buat ulang posting indeks serial dan hapus posting indeks sebelumnya.
+
+    Setiap episode baru akan menghasilkan posting indeks terbaru berisi metadata
+    TMDB dan tombol seluruh episode. Setelah posting baru berhasil dibuat,
+    posting indeks lama dihapus agar channel tetap rapi.
+    """
     metadata = data["metadata"]
     episode_number = int(data.get("episode_number") or 0)
 
     if not metadata.get("episode_code") or episode_number < 1:
         return 0
 
-    target_chat_id = str(
-        data.get("target_chat_id") or CHANNEL_ID
-    )
+    target_chat_id = str(data.get("target_chat_id") or CHANNEL_ID)
     thread_id = int(data.get("message_thread_id") or 0)
     key = series_store_key(data)
     store = load_series_store()
@@ -495,130 +499,80 @@ def create_or_update_series_index(
 
     series["episodes"][str(episode_number)] = {
         "message_id": episode_message_id,
-        "url": telegram_message_url(
-            target_chat_id,
-            episode_message_id,
-        ),
+        "url": telegram_message_url(target_chat_id, episode_message_id),
         "title": metadata.get("episode_title"),
         "episode_code": metadata.get("episode_code"),
+        "overview": metadata.get("overview"),
+        "release_date": metadata.get("release_date"),
+        "vote_average": metadata.get("vote_average"),
         "updated_at": now_ts(),
     }
 
-    series["series_title"] = (
-        metadata.get("series_title")
-        or series.get("series_title")
-    )
-    series["original_title"] = (
-        metadata.get("original_title")
-        or series.get("original_title")
-    )
-    series["year"] = metadata.get("year") or series.get("year")
-    series["poster_url"] = (
-        metadata.get("poster_url")
-        or series.get("poster_url")
-    )
-    series["vote_average"] = metadata.get("vote_average")
-    series["vote_count"] = metadata.get("vote_count")
-    series["release_date"] = metadata.get("release_date")
-    series["certification"] = metadata.get("certification")
-    series["genres"] = metadata.get("genres") or []
-    series["countries"] = metadata.get("countries") or []
-    series["languages"] = metadata.get("languages") or []
-    series["directors"] = metadata.get("directors") or []
-    series["writers"] = metadata.get("writers") or []
-    series["cast"] = metadata.get("cast") or []
-    series["overview"] = (
-        metadata.get("overview")
-        or series.get("overview")
-    )
-
+    # Selalu segarkan metadata seri dari TMDB/metadata episode terbaru.
+    for field, fallback in (
+        ("series_title", series.get("series_title")),
+        ("original_title", series.get("original_title")),
+        ("year", series.get("year")),
+        ("poster_url", series.get("poster_url")),
+        ("overview", series.get("overview")),
+    ):
+        series[field] = metadata.get(field) or fallback
+    for field in (
+        "vote_average", "vote_count", "release_date", "certification",
+        "genres", "countries", "languages", "directors", "writers", "cast",
+    ):
+        value = metadata.get(field)
+        if value not in (None, "", []):
+            series[field] = value
 
     caption = build_series_index_caption(series)
     reply_markup = json.dumps(
-        {
-            "inline_keyboard": build_episode_keyboard(
-                series["episodes"]
-            )
-        },
+        {"inline_keyboard": build_episode_keyboard(series["episodes"])},
         ensure_ascii=False,
     )
+    previous_index_id = int(series.get("index_message_id") or 0)
 
-    index_message_id = int(
-        series.get("index_message_id") or 0
-    )
+    payload: dict[str, Any] = {
+        "chat_id": target_chat_id,
+        "caption": caption,
+        "reply_markup": reply_markup,
+    }
+    if thread_id > 0:
+        payload["message_thread_id"] = str(thread_id)
 
-    def create_new_index_message() -> int:
-        payload: dict[str, Any] = {
-            "chat_id": target_chat_id,
-            "caption": caption,
-            "reply_markup": reply_markup,
-        }
-        if thread_id > 0:
-            payload["message_thread_id"] = str(thread_id)
-
-        poster = str(series.get("poster_url") or "")
-        if poster:
-            payload["photo"] = poster
-            result = telegram_post("sendPhoto", payload)
-            series["index_type"] = "photo"
-        else:
-            payload.pop("caption", None)
-            payload["text"] = caption
-            result = telegram_post("sendMessage", payload)
-            series["index_type"] = "text"
-
-        new_message_id = int(
-            result["result"]["message_id"]
-        )
-        series["index_message_id"] = new_message_id
-        series["recovered_at"] = now_ts()
-        return new_message_id
-
-    if index_message_id <= 0:
-        index_message_id = create_new_index_message()
+    poster = str(series.get("poster_url") or "")
+    if poster:
+        payload["photo"] = poster
+        result = telegram_post("sendPhoto", payload)
+        series["index_type"] = "photo"
     else:
-        method = (
-            "editMessageCaption"
-            if series.get("index_type") == "photo"
-            else "editMessageText"
-        )
-        payload = {
-            "chat_id": target_chat_id,
-            "message_id": str(index_message_id),
-            "reply_markup": reply_markup,
-        }
-        if method == "editMessageCaption":
-            payload["caption"] = caption
-        else:
-            payload["text"] = caption
+        payload.pop("caption", None)
+        payload["text"] = caption
+        result = telegram_post("sendMessage", payload)
+        series["index_type"] = "text"
 
+    new_index_id = int(result["result"]["message_id"])
+    series["index_message_id"] = new_index_id
+    series["previous_index_message_id"] = previous_index_id
+
+    # Hapus posting indeks lama hanya setelah posting baru berhasil dibuat.
+    if previous_index_id > 0 and previous_index_id != new_index_id:
         try:
-            telegram_post(method, payload)
-        except RuntimeError as exc:
-            error_text = str(exc).lower()
-            recoverable_errors = (
-                "message to edit not found",
-                "message can't be edited",
-                "message identifier is not specified",
-                "chat not found",
+            telegram_post(
+                "deleteMessage",
+                {"chat_id": target_chat_id, "message_id": str(previous_index_id)},
             )
-
-            if not any(
-                marker in error_text
-                for marker in recoverable_errors
-            ):
-                raise
-
-            # Posting utama sudah dihapus, dipindah, atau ID lama tidak valid.
-            # Buat posting utama baru dan simpan Message ID penggantinya.
-            series["previous_index_message_id"] = index_message_id
-            series["recovery_reason"] = str(exc)
-            index_message_id = create_new_index_message()
+            series["previous_index_deleted"] = True
+            series.pop("delete_warning", None)
+        except Exception as exc:
+            # Episode tetap dianggap sukses; peringatan disimpan agar dapat diperiksa.
+            series["previous_index_deleted"] = False
+            series["delete_warning"] = str(exc)
 
     series["updated_at"] = now_ts()
     store[key] = series
-    save_series_store(store)
-    return index_message_id
+    save_series_store(store, reason="refresh-index")
+    return new_index_id
 
 queue_lock = threading.Lock()
 queue_condition = threading.Condition(queue_lock)
@@ -632,7 +586,7 @@ PANEL_HTML = r"""
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>CineDrive Studio v10.6.1 Turbo · Smart Watermark Safe Area</title>
+<title>CineDrive Studio v10.6.2 Turbo · Smart Watermark Safe Area</title>
 
 <style>
 :root{
@@ -746,14 +700,14 @@ button:active{transform:translateY(0) scale(.995)}
 </nav>
 <div class="wrap">
   <div class="card page-section" id="homeSection">
-    <h1>🎬 CineDrive Studio v10.6.1 Turbo · Smart Watermark Safe Area</h1>
+    <h1>🎬 CineDrive Studio v10.6.2 Turbo · Smart Watermark Safe Area</h1>
     <p class="muted">Pilih menu di navigasi untuk mencari film, mengelola serial, atau melihat antrean tanpa perlu menggulir halaman panjang.</p>
     <div class="batch-help"><strong>Status penyimpanan:</strong> {% if storage.persistent %}<span class="SUCCESS">Permanen</span>{% else %}<span class="ERROR">Sementara</span>{% endif %}<br><span class="muted">Serial: {{ storage.series_path }}<br>Topic: {{ storage.topic_path }}<br>Backup: {{ storage.backup_dir }}</span>{% if storage.warning %}<p class="error">{{ storage.warning }}</p>{% endif %}</div>
   </div>
 
   <div class="card page-section active" id="searchSection">
     <h1>🎬 CineDrive Studio</h1>
-    <p class="muted" style="font-size:15px;margin-top:0">Kelola film, serial, subtitle, watermark, dan publikasi Telegram dalam satu panel.</p>
+    <p class="muted" style="font-size:15px;margin-top:0">Kelola film, serial, subtitle, watermark, dan publikasi Telegram dalam satu panel. Episode baru mengambil detail TMDB terbaru dan mengganti posting indeks lama secara otomatis.</p>
     <form method="post" action="{{ scan_url }}">
       <button type="submit">Scan Group & Topic terbaru</button>
     </form>
@@ -2409,13 +2363,13 @@ def send_poster(meta: dict[str, Any], caption: str, target_chat_id: str, message
     if not response.ok or not data.get("ok"):
         raise RuntimeError(f"Kirim poster gagal: {data.get('description', response.text)}")
 
-def upload_video(job_id: str, video_path: Path, thumb_path: Path, title: str, target_chat_id: str, message_thread_id: int) -> dict[str, Any]:
+def upload_video(job_id: str, video_path: Path, thumb_path: Path, caption: str, target_chat_id: str, message_thread_id: int) -> dict[str, Any]:
     video_file = video_path.open("rb")
     thumb_file = thumb_path.open("rb")
     try:
         fields: dict[str, Any] = {
             "chat_id": target_chat_id,
-            "caption": title,
+            "caption": caption[:1024],
             "supports_streaming": "true",
             "video": (video_path.name, video_file, "video/mp4"),
             "thumbnail": (thumb_path.name, thumb_file, "image/jpeg"),
@@ -2535,7 +2489,7 @@ def process_job(job_id: str) -> None:
             job_id,
             output_path,
             thumb_path,
-            data["metadata"]["title"],
+            full_caption,
             str(data.get("target_chat_id") or CHANNEL_ID),
             int(data.get("message_thread_id") or 0),
         )
@@ -2659,7 +2613,7 @@ LANDING_HTML = r"""
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#070910">
-<title>CINEMAXX1 · CineDrive Studio v10.6.1 · Smart Watermark Safe Area</title>
+<title>CINEMAXX1 · CineDrive Studio v10.6.2 · Smart Watermark Safe Area</title>
 <style>
 :root{color-scheme:dark;--bg:#06070b;--panel:rgba(15,17,24,.78);--line:rgba(255,255,255,.11);--gold:#f7c75f;--gold2:#fff1ad;--text:#fff;--muted:#a8acb8;--ok:#43e39f}
 *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;min-height:100vh;font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;color:var(--text);background:#06070b;overflow-x:hidden}
@@ -2681,7 +2635,7 @@ body:before{content:"";position:fixed;inset:0;background:radial-gradient(circle 
 <div class="login" id="login"><h2>Masuk ke panel</h2><p>Masukkan SECRET_KEY Railway untuk membuka dashboard pengelolaan.</p><form method="get" action="/panel"><label>SECRET KEY</label><input type="password" name="key" autocomplete="current-password" placeholder="Masukkan kunci akses" required><button type="submit">Masuk ke Dashboard</button></form><p class="tiny">Kunci dipakai untuk autentikasi panel dan tidak disimpan oleh halaman ini.</p></div></section>
 <section class="stats"><div class="stat"><span>SERIAL TERSIMPAN</span><b>{{ stats.series }}</b></div><div class="stat"><span>TOTAL EPISODE</span><b>{{ stats.episodes }}</b></div><div class="stat"><span>ANTREAN AKTIF</span><b>{{ stats.active_jobs }}</b></div><div class="stat"><span>VERSI APLIKASI</span><b>10.6</b></div></section>
 <section class="features"><article class="feature"><i>🎞️</i><h3>Encoding Telegram</h3><p>H.265 hemat ukuran dengan fallback H.264 dan target hasil di bawah 1,5 GB.</p></article><article class="feature"><i>📺</i><h3>Pengelolaan Serial</h3><p>Tambah episode, perbarui posting utama, pulihkan data, dan kelola tombol episode.</p></article><article class="feature"><i>🗄️</i><h3>Data Permanen</h3><p>Backup, ekspor, impor, dan pemulihan data yang tersimpan pada Railway Volume.</p></article></section>
-<footer class="foot"><span>© 2026 CINEMAXX1</span><span>CineDrive Studio v10.6.1 · Smart Watermark Safe Area · Railway</span></footer>
+<footer class="foot"><span>© 2026 CINEMAXX1</span><span>CineDrive Studio v10.6.2 · Smart Watermark Safe Area · Railway</span></footer>
 </main></body></html>
 """
 
@@ -2983,7 +2937,7 @@ def batch_enqueue():
             episode_lines,
             subtitle_mode,
         )
-        batch_logo_dir = Path(tempfile.mkdtemp(prefix="watermark-batch-v10-6-1-"))
+        batch_logo_dir = Path(tempfile.mkdtemp(prefix="watermark-batch-v10-6-2-1-"))
         try:
             batch_watermark = save_watermark_upload("batch_watermark", batch_logo_dir)
         except Exception:
@@ -3019,7 +2973,7 @@ def batch_enqueue():
                 job_id = uuid.uuid4().hex[:12]
                 work_dir = Path(
                     tempfile.mkdtemp(
-                        prefix=f"drive-telegram-v10-6-{job_id}-"
+                        prefix=f"drive-telegram-v10-6-2-{job_id}-"
                     )
                 )
 
@@ -3267,11 +3221,19 @@ def add_saved_episode():
         if mode=="drive": sub_id=extract_drive_file_id(str(request.form.get("saved_subtitle_drive") or ""))
         public_folder_input=str(request.form.get("saved_public_folder_input") or "").strip()
         public_folder_id=extract_drive_folder_id(public_folder_input) if mode=="auto_drive" else ""
-        meta=metadata_from_saved_series(series,ep,str(request.form.get("saved_episode_title") or ""))
+        tmdb_id = int(series.get("tmdb_id") or 0)
+        season_number = int(series.get("season_number") or 1)
+        if tmdb_id > 0 and not bool(series.get("manual")):
+            try:
+                meta = build_episode_metadata(tmdb_id, season_number, ep)
+            except Exception:
+                meta = metadata_from_saved_series(series, ep, str(request.form.get("saved_episode_title") or ""))
+        else:
+            meta = metadata_from_saved_series(series, ep, str(request.form.get("saved_episode_title") or ""))
         with queue_condition:
             active=sum(1 for i in jobs.values() if i["state"] in {"QUEUED","DOWNLOADING","PROCESSING","UPLOADING"})
             if active>=MAX_QUEUE: raise ValueError(f"Antrean penuh. Maksimal {MAX_QUEUE}")
-            jid=uuid.uuid4().hex[:12]; wd=Path(tempfile.mkdtemp(prefix=f"drive-telegram-v10-6-{jid}-"))
+            jid=uuid.uuid4().hex[:12]; wd=Path(tempfile.mkdtemp(prefix=f"drive-telegram-v10-6-2-{jid}-"))
             watermark_config=save_watermark_upload("saved_watermark",wd)
             chat=str(series.get("target_chat_id") or CHANNEL_ID); thread=int(series.get("message_thread_id") or 0)
             jobs[jid]={"id":jid,"file_id":video_id,"title":meta["title"],"metadata":meta,"tmdb_id":int(series.get("tmdb_id") or 0),"season_number":int(series.get("season_number") or 1),"episode_number":ep,"target_chat_id":chat,"message_thread_id":thread,"topic_name":str(series.get("topic_name") or topic_name_from_id(thread,chat)),"extra_caption":str(request.form.get("saved_extra_caption") or "").strip(),"subtitle_mode":mode,"uploaded_subtitle":"","subtitle_drive_file_id":sub_id,"public_folder_id":public_folder_id,"subtitle_info":"Menunggu pemeriksaan","work_dir":str(wd),"state":"QUEUED","message":"Menunggu giliran.","created_at":now_ts(),"started_at":None,"finished_at":None,"downloaded_bytes":0,"total_bytes":0,"file_size_bytes":0,"message_id":None,"error":None,"stage_progress":0.0,"overall_progress":0.0,"progress_detail":"Menunggu giliran.","eta_seconds":0,"eta_human":"-","manual_mode":bool(series.get("manual")),"saved_series_key":series_key,**watermark_config,**parse_encode_config("saved_")}
@@ -3307,7 +3269,7 @@ def manual_enqueue():
             active_count = sum(1 for item in jobs.values() if item["state"] in {"QUEUED","DOWNLOADING","PROCESSING","UPLOADING"})
             if active_count >= MAX_QUEUE: raise ValueError(f"Antrean penuh. Maksimal {MAX_QUEUE}.")
             job_id = uuid.uuid4().hex[:12]
-            work_dir = Path(tempfile.mkdtemp(prefix=f"drive-telegram-v10-6-{job_id}-"))
+            work_dir = Path(tempfile.mkdtemp(prefix=f"drive-telegram-v10-6-2-{job_id}-"))
             watermark_config = save_watermark_upload("manual_watermark", work_dir)
             manual_media_type = str(request.form.get("manual_media_type") or "movie")
             season_number = int(request.form.get("manual_season_number") or "1") if manual_media_type == "tv" else None
@@ -3380,7 +3342,7 @@ def enqueue():
             return jsonify({"success": False, "error": f"Antrean penuh. Maksimal {MAX_QUEUE} pekerjaan."}), 429
 
         job_id = uuid.uuid4().hex[:12]
-        work_dir = Path(tempfile.mkdtemp(prefix=f"drive-telegram-v10-6-{job_id}-"))
+        work_dir = Path(tempfile.mkdtemp(prefix=f"drive-telegram-v10-6-2-{job_id}-"))
         try:
             watermark_config = save_watermark_upload("watermark", work_dir)
         except Exception:
