@@ -88,7 +88,7 @@ EPISODE_BUTTONS_PER_ROW = max(
 )
 
 
-CLUSTER_VERSION = "11.0.2"
+CLUSTER_VERSION = "11.0.3"
 
 
 def _deep_merge_cluster(remote: Any, local: Any) -> Any:
@@ -146,9 +146,9 @@ class ClusterStore:
                 headers=self._headers(),
                 params={
                     "namespace": f"eq.{self.namespace}",
-                    "record_type": "eq.document",
-                    "record_key": f"eq.{document_key}",
-                    "select": "data,updated_at,updated_by",
+                    "bucket": "eq.documents",
+                    "item_key": f"eq.{document_key}",
+                    "select": "value,data,updated_at,updated_by",
                     "limit": "1",
                 },
                 timeout=20,
@@ -157,8 +157,10 @@ class ClusterStore:
             rows = response.json()
             self.last_error = ""
             self.last_sync_at = int(time.time())
-            if rows and isinstance(rows[0].get("data"), type(default)):
-                return rows[0]["data"]
+            if rows:
+                remote_value = rows[0].get("value", rows[0].get("data"))
+                if isinstance(remote_value, type(default)):
+                    return remote_value
         except Exception as exc:
             self.last_error = f"get {document_key}: {exc}"
         return default
@@ -185,6 +187,10 @@ class ClusterStore:
                         final_data = list(indexed.values())
                 payload = {
                     "namespace": self.namespace,
+                    "bucket": "documents",
+                    "item_key": document_key,
+                    "value": final_data,
+                    "worker_id": self.worker_id,
                     "record_type": "document",
                     "record_key": document_key,
                     "data": final_data,
@@ -194,7 +200,7 @@ class ClusterStore:
                 response = requests.post(
                     self._endpoint("cinedrive_cluster"),
                     headers=self._headers("resolution=merge-duplicates,return=minimal"),
-                    params={"on_conflict": "namespace,record_type,record_key"},
+                    params={"on_conflict": "namespace,bucket,item_key"},
                     json=payload,
                     timeout=25,
                 )
@@ -220,6 +226,10 @@ class ClusterStore:
         }
         payload = {
             "namespace": self.namespace,
+            "bucket": "workers",
+            "item_key": self.worker_id,
+            "value": worker_data,
+            "worker_id": self.worker_id,
             "record_type": "worker",
             "record_key": self.worker_id,
             "data": worker_data,
@@ -230,7 +240,7 @@ class ClusterStore:
             response = requests.post(
                 self._endpoint("cinedrive_cluster"),
                 headers=self._headers("resolution=merge-duplicates,return=representation"),
-                params={"on_conflict": "namespace,record_type,record_key"},
+                params={"on_conflict": "namespace,bucket,item_key"},
                 json=payload,
                 timeout=20,
             )
@@ -243,9 +253,9 @@ class ClusterStore:
                 headers=self._headers(),
                 params={
                     "namespace": f"eq.{self.namespace}",
-                    "record_type": "eq.worker",
-                    "record_key": f"eq.{self.worker_id}",
-                    "select": "record_key,data,updated_at",
+                    "bucket": "eq.workers",
+                    "item_key": f"eq.{self.worker_id}",
+                    "select": "item_key,value,data,updated_at",
                     "limit": "1",
                 },
                 timeout=20,
@@ -275,8 +285,8 @@ class ClusterStore:
                 headers=self._headers(),
                 params={
                     "namespace": f"eq.{self.namespace}",
-                    "record_type": "eq.worker",
-                    "select": "record_key,data,updated_at,updated_by",
+                    "bucket": "eq.workers",
+                    "select": "item_key,value,data,updated_at,updated_by",
                     "order": "updated_at.desc",
                 },
                 timeout=20,
@@ -285,9 +295,9 @@ class ClusterStore:
             rows = response.json()
             workers: list[dict[str, Any]] = []
             for row in rows:
-                data = row.get("data") if isinstance(row, dict) else None
+                data = row.get("value", row.get("data")) if isinstance(row, dict) else None
                 worker = dict(data) if isinstance(data, dict) else {}
-                worker.setdefault("worker_id", row.get("record_key") if isinstance(row, dict) else "")
+                worker.setdefault("worker_id", row.get("item_key") if isinstance(row, dict) else "")
                 worker.setdefault("last_seen", row.get("updated_at") if isinstance(row, dict) else "")
                 workers.append(worker)
             self.workers_error = ""

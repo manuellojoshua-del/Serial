@@ -1,53 +1,47 @@
-# CineDrive v11.0.2 Cluster Fix — Ready Deploy
+# CineDrive v11.0.3 Cluster Final
 
-Dibangun dari CineDrive v10.6.2.2. Semua fitur TMDB, serial, subtitle, Smart Watermark Safe Area, H.265 Turbo, dan Telegram Local Bot API dipertahankan.
+Versi ini memperbaiki heartbeat Supabase untuk struktur tabel `cinedrive_cluster` yang memiliki kolom lama dan baru sekaligus.
 
-## Fitur cluster
+## Perbaikan utama
 
-- Sinkronisasi `series`, `topics`, dan `scan_results` melalui Supabase.
-- Cache lokal `/data` tetap digunakan sebagai fallback saat Supabase tidak dapat dijangkau.
-- Metadata episode dari beberapa Railway digabung agar episode yang sudah tersimpan tidak tertimpa.
-- Heartbeat worker setiap 30 detik.
-- Endpoint `/cluster-status`, `/cluster-workers`, dan `/cluster-sync`.
-- `/health` menampilkan versi dan status aktivasi cluster.
+- Heartbeat mengisi semua kolom wajib: `namespace`, `bucket`, `item_key`, `value`, `updated_at`, `record_type`, `record_key`, dan `data`.
+- UPSERT memakai identitas `namespace,bucket,item_key`.
+- Worker disimpan dengan `bucket=workers` dan `item_key=CLUSTER_WORKER_ID`.
+- Dokumen sinkron disimpan dengan `bucket=documents`.
+- Heartbeat otomatis dijalankan saat startup dan setiap 30 detik.
+- Endpoint `/cluster-heartbeat` dan `/cluster-status` tetap tersedia.
 
-> File video, subtitle upload, logo, dan proses FFmpeg tetap dikerjakan oleh Railway yang menerima permintaan. v11.0.0 menyinkronkan data serial, bukan memindahkan proses encode aktif antarserver.
+## Pemasangan
 
-## Instalasi Supabase
-
-1. Buka Supabase → SQL Editor.
-2. Jalankan `supabase_setup.sql`.
-3. Ambil Project URL dan `service_role` key.
-4. Jangan menaruh service role key di GitHub.
-
-## Variables Railway
-
-Tambahkan ke setiap service:
+1. Upload semua file ZIP ini ke root repository GitHub.
+2. Di Supabase buka **SQL Editor** dan jalankan seluruh isi `supabase_setup.sql`.
+3. Pastikan Railway Variables berisi:
 
 ```env
 SUPABASE_URL=https://PROJECT_ID.supabase.co
-SUPABASE_SERVICE_ROLE_KEY=SERVICE_ROLE_KEY
+SUPABASE_SERVICE_ROLE_KEY=ISI_SERVICE_ROLE_KEY
 CLUSTER_NAMESPACE=cinemaxx1-production
 CLUSTER_WORKER_ID=railway-1
 ```
 
-Pada Railway kedua, gunakan `CLUSTER_WORKER_ID=railway-2`. Namespace, URL, dan key harus sama. Variabel CineDrive lama tetap dipakai.
+4. Redeploy Railway.
+5. Periksa Deploy Logs. Hasil normal:
 
-## Deploy
+```text
+[CLUSTER] heartbeat OK worker=railway-1 namespace=cinemaxx1-production
+```
 
-1. Upload seluruh isi ZIP ke root GitHub.
-2. Pastikan Railway Volume terpasang pada `/data`.
-3. Redeploy.
-4. Buka `https://DOMAIN/health`.
-5. Buka `https://DOMAIN/cluster-status`.
+6. Buka:
 
-Saat konfigurasi benar, `enabled` bernilai `true` dan daftar worker muncul. Bila `enabled` bernilai `false`, periksa `SUPABASE_URL` dan `SUPABASE_SERVICE_ROLE_KEY`.
+```text
+https://domain-anda/cluster-heartbeat
+https://domain-anda/cluster-status
+```
 
+Status normal menampilkan `version: 11.0.3`, `heartbeat_ok: true`, dan `active_worker_count: 1`.
 
-## v11.0.2 Cluster Fix
+Untuk Railway kedua gunakan Supabase dan namespace yang sama, tetapi ubah:
 
-Versi ini memakai satu tabel Supabase bernama `cinedrive_cluster` untuk dokumen sinkronisasi dan heartbeat worker. Jalankan ulang `supabase_setup.sql`, lalu redeploy Railway. Endpoint `/cluster-status` tidak lagi mengakses tabel `cluster_workers`.
-
-## Verifikasi heartbeat v11.0.2
-
-Setelah deploy, buka `/cluster-heartbeat`. Respons benar harus berisi `heartbeat_ok: true`, `active_worker_count: 1`, dan worker saat ini di dalam `workers`. Deploy Logs juga menampilkan `[CLUSTER] heartbeat OK`.
+```env
+CLUSTER_WORKER_ID=railway-2
+```
