@@ -1,4 +1,4 @@
-# Google Drive → Telegram v10.6 — Smart Watermark v2
+# Google Drive → Telegram v10.6.2.2 — Smart Watermark v2
 
 Versi ini menambahkan watermark logo yang benar-benar ditanam ke gambar film saat proses FFmpeg. Logo tetap terlihat ketika video diputar, diunduh, atau diteruskan.
 
@@ -148,3 +148,27 @@ TELEGRAM_X265_FRAME_THREADS=1
 - Penghapusan dilakukan setelah posting baru berhasil dibuat, sehingga daftar serial tidak hilang jika pengiriman posting baru gagal.
 - Untuk serial manual atau ketika TMDB sedang gagal diakses, aplikasi memakai metadata serial tersimpan sebagai fallback.
 - Bot harus menjadi administrator dan memiliki izin **Delete Messages** di channel atau supergroup tujuan.
+
+## v10.6.2.1 — Film sebagai satu posting video + detail TMDB
+
+- Saat menambahkan **film**, bot tidak lagi mengirim poster sebagai pesan terpisah.
+- Video film menjadi posting utama.
+- Detail TMDB ditampilkan langsung sebagai caption di bawah video:
+  judul, AKA, durasi, kategori, rating, tanggal rilis, genre, negara,
+  bahasa, sutradara, penulis, pemeran, dan sinopsis.
+- Thumbnail video tetap dibuat dari cuplikan film agar tampilan Telegram menarik.
+- Episode serial dan posting indeks serial tetap menggunakan alur v10.6.2.
+
+
+## v10.6.2.2 — Format film: Poster + detail TMDB, lalu video
+
+Untuk konten film, bot mengirim dua pesan berurutan dalam topic/channel yang sama:
+
+1. Poster TMDB dengan caption detail lengkap.
+2. Video film tepat di bawahnya dengan caption judul film.
+
+Detail poster meliputi judul, AKA, durasi, kategori, rating, tanggal rilis,
+genre, negara, bahasa, sutradara, penulis, pemeran, dan sinopsis.
+
+Alur serial/episode, tombol episode, subtitle, Smart Watermark Safe Area,
+target ukuran, dan H.265 Turbo tetap dipertahankan.

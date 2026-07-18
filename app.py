@@ -586,7 +586,7 @@ PANEL_HTML = r"""
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>CineDrive Studio v10.6.2 Turbo · Smart Watermark Safe Area</title>
+<title>CineDrive Studio v10.6.2.2 Turbo · Smart Watermark Safe Area</title>
 
 <style>
 :root{
@@ -700,7 +700,7 @@ button:active{transform:translateY(0) scale(.995)}
 </nav>
 <div class="wrap">
   <div class="card page-section" id="homeSection">
-    <h1>🎬 CineDrive Studio v10.6.2 Turbo · Smart Watermark Safe Area</h1>
+    <h1>🎬 CineDrive Studio v10.6.2.2 Turbo · Smart Watermark Safe Area</h1>
     <p class="muted">Pilih menu di navigasi untuk mencari film, mengelola serial, atau melihat antrean tanpa perlu menggulir halaman panjang.</p>
     <div class="batch-help"><strong>Status penyimpanan:</strong> {% if storage.persistent %}<span class="SUCCESS">Permanen</span>{% else %}<span class="ERROR">Sementara</span>{% endif %}<br><span class="muted">Serial: {{ storage.series_path }}<br>Topic: {{ storage.topic_path }}<br>Backup: {{ storage.backup_dir }}</span>{% if storage.warning %}<p class="error">{{ storage.warning }}</p>{% endif %}</div>
   </div>
@@ -2463,35 +2463,45 @@ def process_job(job_id: str) -> None:
             data["metadata"].get("episode_code")
         )
 
+        target_chat_id = str(data.get("target_chat_id") or CHANNEL_ID)
+        target_thread_id = int(data.get("message_thread_id") or 0)
+
         if not is_episode:
             update_progress(
                 job_id,
                 "UPLOADING",
                 0,
-                message="Mengirim poster dan metadata.",
-                detail="Menyiapkan upload Telegram.",
+                message="Mengirim poster dan detail TMDB.",
+                detail="Membuat posting informasi film.",
             )
             send_poster(
                 data["metadata"],
                 full_caption,
-                str(data.get("target_chat_id") or CHANNEL_ID),
-                int(data.get("message_thread_id") or 0),
+                target_chat_id,
+                target_thread_id,
             )
+            video_caption = str(
+                data["metadata"].get("title")
+                or data["metadata"].get("original_title")
+                or "Film"
+            )[:1024]
+        else:
+            video_caption = full_caption
 
         update_progress(
             job_id,
             "UPLOADING",
             1,
-            message="Mengunggah video ke Telegram.",
+            message=("Mengunggah video film." if not is_episode else "Mengunggah episode ke Telegram."),
             detail="Memulai koneksi upload.",
         )
         result = upload_video(
             job_id,
             output_path,
             thumb_path,
-            full_caption,
-            str(data.get("target_chat_id") or CHANNEL_ID),
-            int(data.get("message_thread_id") or 0),
+            video_caption,
+            target_chat_id,
+            target_thread_id,
         )
 
         episode_message_id = int(
@@ -2613,7 +2623,7 @@ LANDING_HTML = r"""
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#070910">
-<title>CINEMAXX1 · CineDrive Studio v10.6.2 · Smart Watermark Safe Area</title>
+<title>CINEMAXX1 · CineDrive Studio v10.6.2.2 · Smart Watermark Safe Area</title>
 <style>
 :root{color-scheme:dark;--bg:#06070b;--panel:rgba(15,17,24,.78);--line:rgba(255,255,255,.11);--gold:#f7c75f;--gold2:#fff1ad;--text:#fff;--muted:#a8acb8;--ok:#43e39f}
 *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;min-height:100vh;font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;color:var(--text);background:#06070b;overflow-x:hidden}
@@ -2635,7 +2645,7 @@ body:before{content:"";position:fixed;inset:0;background:radial-gradient(circle 
 <div class="login" id="login"><h2>Masuk ke panel</h2><p>Masukkan SECRET_KEY Railway untuk membuka dashboard pengelolaan.</p><form method="get" action="/panel"><label>SECRET KEY</label><input type="password" name="key" autocomplete="current-password" placeholder="Masukkan kunci akses" required><button type="submit">Masuk ke Dashboard</button></form><p class="tiny">Kunci dipakai untuk autentikasi panel dan tidak disimpan oleh halaman ini.</p></div></section>
 <section class="stats"><div class="stat"><span>SERIAL TERSIMPAN</span><b>{{ stats.series }}</b></div><div class="stat"><span>TOTAL EPISODE</span><b>{{ stats.episodes }}</b></div><div class="stat"><span>ANTREAN AKTIF</span><b>{{ stats.active_jobs }}</b></div><div class="stat"><span>VERSI APLIKASI</span><b>10.6</b></div></section>
 <section class="features"><article class="feature"><i>🎞️</i><h3>Encoding Telegram</h3><p>H.265 hemat ukuran dengan fallback H.264 dan target hasil di bawah 1,5 GB.</p></article><article class="feature"><i>📺</i><h3>Pengelolaan Serial</h3><p>Tambah episode, perbarui posting utama, pulihkan data, dan kelola tombol episode.</p></article><article class="feature"><i>🗄️</i><h3>Data Permanen</h3><p>Backup, ekspor, impor, dan pemulihan data yang tersimpan pada Railway Volume.</p></article></section>
-<footer class="foot"><span>© 2026 CINEMAXX1</span><span>CineDrive Studio v10.6.2 · Smart Watermark Safe Area · Railway</span></footer>
+<footer class="foot"><span>© 2026 CINEMAXX1</span><span>CineDrive Studio v10.6.2.2 · Smart Watermark Safe Area · Railway</span></footer>
 </main></body></html>
 """
 
@@ -2937,7 +2947,7 @@ def batch_enqueue():
             episode_lines,
             subtitle_mode,
         )
-        batch_logo_dir = Path(tempfile.mkdtemp(prefix="watermark-batch-v10-6-2-1-"))
+        batch_logo_dir = Path(tempfile.mkdtemp(prefix="watermark-batch-v10-6-2-2-"))
         try:
             batch_watermark = save_watermark_upload("batch_watermark", batch_logo_dir)
         except Exception:
@@ -2973,7 +2983,7 @@ def batch_enqueue():
                 job_id = uuid.uuid4().hex[:12]
                 work_dir = Path(
                     tempfile.mkdtemp(
-                        prefix=f"drive-telegram-v10-6-2-{job_id}-"
+                        prefix=f"drive-telegram-v10-6-2-2-{job_id}-"
                     )
                 )
 
@@ -3233,7 +3243,7 @@ def add_saved_episode():
         with queue_condition:
             active=sum(1 for i in jobs.values() if i["state"] in {"QUEUED","DOWNLOADING","PROCESSING","UPLOADING"})
             if active>=MAX_QUEUE: raise ValueError(f"Antrean penuh. Maksimal {MAX_QUEUE}")
-            jid=uuid.uuid4().hex[:12]; wd=Path(tempfile.mkdtemp(prefix=f"drive-telegram-v10-6-2-{jid}-"))
+            jid=uuid.uuid4().hex[:12]; wd=Path(tempfile.mkdtemp(prefix=f"drive-telegram-v10-6-2-2-{jid}-"))
             watermark_config=save_watermark_upload("saved_watermark",wd)
             chat=str(series.get("target_chat_id") or CHANNEL_ID); thread=int(series.get("message_thread_id") or 0)
             jobs[jid]={"id":jid,"file_id":video_id,"title":meta["title"],"metadata":meta,"tmdb_id":int(series.get("tmdb_id") or 0),"season_number":int(series.get("season_number") or 1),"episode_number":ep,"target_chat_id":chat,"message_thread_id":thread,"topic_name":str(series.get("topic_name") or topic_name_from_id(thread,chat)),"extra_caption":str(request.form.get("saved_extra_caption") or "").strip(),"subtitle_mode":mode,"uploaded_subtitle":"","subtitle_drive_file_id":sub_id,"public_folder_id":public_folder_id,"subtitle_info":"Menunggu pemeriksaan","work_dir":str(wd),"state":"QUEUED","message":"Menunggu giliran.","created_at":now_ts(),"started_at":None,"finished_at":None,"downloaded_bytes":0,"total_bytes":0,"file_size_bytes":0,"message_id":None,"error":None,"stage_progress":0.0,"overall_progress":0.0,"progress_detail":"Menunggu giliran.","eta_seconds":0,"eta_human":"-","manual_mode":bool(series.get("manual")),"saved_series_key":series_key,**watermark_config,**parse_encode_config("saved_")}
@@ -3269,7 +3279,7 @@ def manual_enqueue():
             active_count = sum(1 for item in jobs.values() if item["state"] in {"QUEUED","DOWNLOADING","PROCESSING","UPLOADING"})
             if active_count >= MAX_QUEUE: raise ValueError(f"Antrean penuh. Maksimal {MAX_QUEUE}.")
             job_id = uuid.uuid4().hex[:12]
-            work_dir = Path(tempfile.mkdtemp(prefix=f"drive-telegram-v10-6-2-{job_id}-"))
+            work_dir = Path(tempfile.mkdtemp(prefix=f"drive-telegram-v10-6-2-2-{job_id}-"))
             watermark_config = save_watermark_upload("manual_watermark", work_dir)
             manual_media_type = str(request.form.get("manual_media_type") or "movie")
             season_number = int(request.form.get("manual_season_number") or "1") if manual_media_type == "tv" else None
@@ -3342,7 +3352,7 @@ def enqueue():
             return jsonify({"success": False, "error": f"Antrean penuh. Maksimal {MAX_QUEUE} pekerjaan."}), 429
 
         job_id = uuid.uuid4().hex[:12]
-        work_dir = Path(tempfile.mkdtemp(prefix=f"drive-telegram-v10-6-2-{job_id}-"))
+        work_dir = Path(tempfile.mkdtemp(prefix=f"drive-telegram-v10-6-2-2-{job_id}-"))
         try:
             watermark_config = save_watermark_upload("watermark", work_dir)
         except Exception:
