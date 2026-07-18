@@ -4,6 +4,7 @@ import hashlib
 import os
 import re
 import shutil
+import socket
 import subprocess
 import tempfile
 import threading
@@ -779,7 +780,7 @@ PANEL_HTML = r"""
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>CineDrive Studio v11 Cluster Ready · Smart Watermark Safe Area</title>
+<title>CineDrive Studio v11.0.1 Cluster Ready · Smart Watermark Safe Area</title>
 
 <style>
 :root{
@@ -893,7 +894,7 @@ button:active{transform:translateY(0) scale(.995)}
 </nav>
 <div class="wrap">
   <div class="card page-section" id="homeSection">
-    <h1>🎬 CineDrive Studio v11 Cluster Ready · Smart Watermark Safe Area</h1>
+    <h1>🎬 CineDrive Studio v11.0.1 Cluster Ready · Smart Watermark Safe Area</h1>
     <p class="muted">Pilih menu di navigasi untuk mencari film, mengelola serial, atau melihat antrean tanpa perlu menggulir halaman panjang.</p>
     <div class="batch-help"><strong>Status penyimpanan:</strong> {% if storage.persistent %}<span class="SUCCESS">Permanen</span>{% else %}<span class="ERROR">Sementara</span>{% endif %}<br><span class="muted">Serial: {{ storage.series_path }}<br>Topic: {{ storage.topic_path }}<br>Backup: {{ storage.backup_dir }}</span>{% if storage.warning %}<p class="error">{{ storage.warning }}</p>{% endif %}</div>
   </div>
@@ -2816,7 +2817,7 @@ LANDING_HTML = r"""
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#070910">
-<title>CINEMAXX1 · CineDrive Studio v11 Cluster Ready · Smart Watermark Safe Area</title>
+<title>CINEMAXX1 · CineDrive Studio v11.0.1 Cluster Ready · Smart Watermark Safe Area</title>
 <style>
 :root{color-scheme:dark;--bg:#06070b;--panel:rgba(15,17,24,.78);--line:rgba(255,255,255,.11);--gold:#f7c75f;--gold2:#fff1ad;--text:#fff;--muted:#a8acb8;--ok:#43e39f}
 *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;min-height:100vh;font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;color:var(--text);background:#06070b;overflow-x:hidden}
@@ -2838,7 +2839,7 @@ body:before{content:"";position:fixed;inset:0;background:radial-gradient(circle 
 <div class="login" id="login"><h2>Masuk ke panel</h2><p>Masukkan SECRET_KEY Railway untuk membuka dashboard pengelolaan.</p><form method="get" action="/panel"><label>SECRET KEY</label><input type="password" name="key" autocomplete="current-password" placeholder="Masukkan kunci akses" required><button type="submit">Masuk ke Dashboard</button></form><p class="tiny">Kunci dipakai untuk autentikasi panel dan tidak disimpan oleh halaman ini.</p></div></section>
 <section class="stats"><div class="stat"><span>SERIAL TERSIMPAN</span><b>{{ stats.series }}</b></div><div class="stat"><span>TOTAL EPISODE</span><b>{{ stats.episodes }}</b></div><div class="stat"><span>ANTREAN AKTIF</span><b>{{ stats.active_jobs }}</b></div><div class="stat"><span>VERSI APLIKASI</span><b>10.6</b></div></section>
 <section class="features"><article class="feature"><i>🎞️</i><h3>Encoding Telegram</h3><p>H.265 hemat ukuran dengan fallback H.264 dan target hasil di bawah 1,5 GB.</p></article><article class="feature"><i>📺</i><h3>Pengelolaan Serial</h3><p>Tambah episode, perbarui posting utama, pulihkan data, dan kelola tombol episode.</p></article><article class="feature"><i>🗄️</i><h3>Data Permanen</h3><p>Backup, ekspor, impor, dan pemulihan data yang tersimpan pada Railway Volume.</p></article></section>
-<footer class="foot"><span>© 2026 CINEMAXX1</span><span>CineDrive Studio v11 Cluster Ready · Smart Watermark Safe Area · Railway</span></footer>
+<footer class="foot"><span>© 2026 CINEMAXX1</span><span>CineDrive Studio v11.0.1 Cluster Ready · Smart Watermark Safe Area · Railway</span></footer>
 </main></body></html>
 """
 

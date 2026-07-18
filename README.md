@@ -270,3 +270,14 @@ ModuleNotFoundError: No module named 'cluster_store'
 
 Dockerfile juga menjalankan pemeriksaan sintaks saat build. Upload semua file
 di dalam ZIP ke root repository GitHub, bukan hanya `app.py`.
+
+
+## v11.0.1 hotfix
+
+Memperbaiki crash saat startup:
+
+```text
+NameError: name 'socket' is not defined
+```
+
+Import `socket` sekarang sudah tersedia di `app.py`.
