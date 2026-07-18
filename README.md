@@ -1,4 +1,4 @@
-# CineDrive v11 Cluster
+# CineDrive v11 Cluster Ready Deploy
 
 Versi ini mempertahankan fitur v10.6.2.2 dan menambahkan sinkronisasi metadata
 antar beberapa akun/service Railway menggunakan Supabase.
@@ -257,3 +257,16 @@ genre, negara, bahasa, sutradara, penulis, pemeran, dan sinopsis.
 
 Alur serial/episode, tombol episode, subtitle, Smart Watermark Safe Area,
 target ukuran, dan H.265 Turbo tetap dipertahankan.
+
+## Perbaikan paket Ready Deploy
+
+Paket ini tidak lagi mengimpor `cluster_store.py` sebagai modul terpisah.
+Kode cluster sudah ditanam langsung ke `app.py`, sehingga error berikut tidak
+akan muncul lagi:
+
+```text
+ModuleNotFoundError: No module named 'cluster_store'
+```
+
+Dockerfile juga menjalankan pemeriksaan sintaks saat build. Upload semua file
+di dalam ZIP ke root repository GitHub, bukan hanya `app.py`.

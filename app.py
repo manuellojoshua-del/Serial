@@ -21,7 +21,170 @@ from bs4 import BeautifulSoup
 from requests_toolbelt.multipart.encoder import MultipartEncoder, MultipartEncoderMonitor
 from flask import Flask, jsonify, redirect, render_template_string, request, url_for, send_file
 
-from cluster_store import cluster_store
+# ClusterStore ditanam langsung agar deployment tidak bergantung pada file modul terpisah.
+
+class ClusterStore:
+    def __init__(self) -> None:
+        self.url = os.getenv("SUPABASE_URL", "").rstrip("/")
+        self.key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+        self.namespace = os.getenv("CLUSTER_NAMESPACE", "default").strip() or "default"
+        self.worker_id = os.getenv(
+            "CLUSTER_WORKER_ID",
+            f"{socket.gethostname()}-{uuid.uuid4().hex[:6]}",
+        ).strip()
+        self.enabled = bool(self.url and self.key)
+        self.timeout = max(5, int(os.getenv("CLUSTER_HTTP_TIMEOUT", "20")))
+        self._heartbeat_started = False
+        self._heartbeat_guard = threading.Lock()
+
+    @property
+    def headers(self) -> dict[str, str]:
+        return {
+            "apikey": self.key,
+            "Authorization": f"Bearer {self.key}",
+            "Content-Type": "application/json",
+            "Prefer": "resolution=merge-duplicates,return=representation",
+        }
+
+    def _endpoint(self, table: str = "cinedrive_cluster") -> str:
+        return f"{self.url}/rest/v1/{table}"
+
+    def get_json(self, bucket: str, key: str, default: Any) -> Any:
+        if not self.enabled:
+            return default
+        response = requests.get(
+            self._endpoint(),
+            headers=self.headers,
+            params={
+                "namespace": f"eq.{self.namespace}",
+                "bucket": f"eq.{bucket}",
+                "item_key": f"eq.{key}",
+                "select": "value",
+                "limit": "1",
+            },
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
+        rows = response.json()
+        if not rows:
+            return default
+        value = rows[0].get("value", default)
+        return value
+
+    def put_json(self, bucket: str, key: str, value: Any) -> None:
+        if not self.enabled:
+            return
+        payload = {
+            "namespace": self.namespace,
+            "bucket": bucket,
+            "item_key": key,
+            "value": value,
+            "worker_id": self.worker_id,
+            "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
+        response = requests.post(
+            self._endpoint(),
+            headers=self.headers,
+            params={"on_conflict": "namespace,bucket,item_key"},
+            json=payload,
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
+
+    def merge_dict(self, bucket: str, key: str, incoming: dict[str, Any]) -> dict[str, Any]:
+        """Best-effort conflict-safe merge for dictionary documents.
+
+        It retries after reading the latest document. For episode maps this
+        prevents one Railway worker from blindly replacing another worker's data.
+        """
+        if not self.enabled:
+            return incoming
+        last_error: Exception | None = None
+        for _ in range(3):
+            try:
+                current = self.get_json(bucket, key, {})
+                if not isinstance(current, dict):
+                    current = {}
+                merged = self._deep_merge(current, incoming)
+                self.put_json(bucket, key, merged)
+                return merged
+            except Exception as exc:
+                last_error = exc
+                time.sleep(0.35)
+        if last_error:
+            raise last_error
+        return incoming
+
+    @classmethod
+    def _deep_merge(cls, old: dict[str, Any], new: dict[str, Any]) -> dict[str, Any]:
+        result = dict(old)
+        for key, value in new.items():
+            if isinstance(value, dict) and isinstance(result.get(key), dict):
+                result[key] = cls._deep_merge(result[key], value)
+            else:
+                result[key] = value
+        return result
+
+    def heartbeat(self, extra: dict[str, Any] | None = None) -> None:
+        if not self.enabled:
+            return
+        payload = {
+            "worker_id": self.worker_id,
+            "last_seen": int(time.time()),
+            "hostname": socket.gethostname(),
+            "status": "online",
+        }
+        if extra:
+            payload.update(extra)
+        self.put_json("workers", self.worker_id, payload)
+
+    def list_workers(self) -> list[dict[str, Any]]:
+        if not self.enabled:
+            return []
+        response = requests.get(
+            self._endpoint(),
+            headers=self.headers,
+            params={
+                "namespace": f"eq.{self.namespace}",
+                "bucket": "eq.workers",
+                "select": "item_key,value,updated_at",
+                "order": "updated_at.desc",
+                "limit": "100",
+            },
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
+        rows = response.json()
+        result = []
+        now = int(time.time())
+        for row in rows:
+            value = row.get("value") if isinstance(row.get("value"), dict) else {}
+            last_seen = int(value.get("last_seen") or 0)
+            value["online"] = bool(last_seen and now - last_seen <= 120)
+            result.append(value)
+        return result
+
+    def start_heartbeat(self, interval: int = 45) -> None:
+        if not self.enabled:
+            return
+        with self._heartbeat_guard:
+            if self._heartbeat_started:
+                return
+            self._heartbeat_started = True
+
+        def loop() -> None:
+            while True:
+                try:
+                    self.heartbeat()
+                except Exception:
+                    pass
+                time.sleep(max(15, interval))
+
+        threading.Thread(target=loop, name="cluster-heartbeat", daemon=True).start()
+
+
+cluster_store = ClusterStore()
+
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024
@@ -616,7 +779,7 @@ PANEL_HTML = r"""
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>CineDrive Studio v11 Cluster · Smart Watermark Safe Area</title>
+<title>CineDrive Studio v11 Cluster Ready · Smart Watermark Safe Area</title>
 
 <style>
 :root{
@@ -730,7 +893,7 @@ button:active{transform:translateY(0) scale(.995)}
 </nav>
 <div class="wrap">
   <div class="card page-section" id="homeSection">
-    <h1>🎬 CineDrive Studio v11 Cluster · Smart Watermark Safe Area</h1>
+    <h1>🎬 CineDrive Studio v11 Cluster Ready · Smart Watermark Safe Area</h1>
     <p class="muted">Pilih menu di navigasi untuk mencari film, mengelola serial, atau melihat antrean tanpa perlu menggulir halaman panjang.</p>
     <div class="batch-help"><strong>Status penyimpanan:</strong> {% if storage.persistent %}<span class="SUCCESS">Permanen</span>{% else %}<span class="ERROR">Sementara</span>{% endif %}<br><span class="muted">Serial: {{ storage.series_path }}<br>Topic: {{ storage.topic_path }}<br>Backup: {{ storage.backup_dir }}</span>{% if storage.warning %}<p class="error">{{ storage.warning }}</p>{% endif %}</div>
   </div>
@@ -2653,7 +2816,7 @@ LANDING_HTML = r"""
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#070910">
-<title>CINEMAXX1 · CineDrive Studio v11 Cluster · Smart Watermark Safe Area</title>
+<title>CINEMAXX1 · CineDrive Studio v11 Cluster Ready · Smart Watermark Safe Area</title>
 <style>
 :root{color-scheme:dark;--bg:#06070b;--panel:rgba(15,17,24,.78);--line:rgba(255,255,255,.11);--gold:#f7c75f;--gold2:#fff1ad;--text:#fff;--muted:#a8acb8;--ok:#43e39f}
 *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;min-height:100vh;font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;color:var(--text);background:#06070b;overflow-x:hidden}
@@ -2675,7 +2838,7 @@ body:before{content:"";position:fixed;inset:0;background:radial-gradient(circle 
 <div class="login" id="login"><h2>Masuk ke panel</h2><p>Masukkan SECRET_KEY Railway untuk membuka dashboard pengelolaan.</p><form method="get" action="/panel"><label>SECRET KEY</label><input type="password" name="key" autocomplete="current-password" placeholder="Masukkan kunci akses" required><button type="submit">Masuk ke Dashboard</button></form><p class="tiny">Kunci dipakai untuk autentikasi panel dan tidak disimpan oleh halaman ini.</p></div></section>
 <section class="stats"><div class="stat"><span>SERIAL TERSIMPAN</span><b>{{ stats.series }}</b></div><div class="stat"><span>TOTAL EPISODE</span><b>{{ stats.episodes }}</b></div><div class="stat"><span>ANTREAN AKTIF</span><b>{{ stats.active_jobs }}</b></div><div class="stat"><span>VERSI APLIKASI</span><b>10.6</b></div></section>
 <section class="features"><article class="feature"><i>🎞️</i><h3>Encoding Telegram</h3><p>H.265 hemat ukuran dengan fallback H.264 dan target hasil di bawah 1,5 GB.</p></article><article class="feature"><i>📺</i><h3>Pengelolaan Serial</h3><p>Tambah episode, perbarui posting utama, pulihkan data, dan kelola tombol episode.</p></article><article class="feature"><i>🗄️</i><h3>Data Permanen</h3><p>Backup, ekspor, impor, dan pemulihan data yang tersimpan pada Railway Volume.</p></article></section>
-<footer class="foot"><span>© 2026 CINEMAXX1</span><span>CineDrive Studio v11 Cluster · Smart Watermark Safe Area · Railway</span></footer>
+<footer class="foot"><span>© 2026 CINEMAXX1</span><span>CineDrive Studio v11 Cluster Ready · Smart Watermark Safe Area · Railway</span></footer>
 </main></body></html>
 """
 
