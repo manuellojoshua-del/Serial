@@ -88,7 +88,7 @@ EPISODE_BUTTONS_PER_ROW = max(
 )
 
 
-CLUSTER_VERSION = "11.0.0"
+CLUSTER_VERSION = "11.0.1"
 
 
 def _deep_merge_cluster(remote: Any, local: Any) -> Any:
@@ -135,11 +135,12 @@ class ClusterStore:
             return default
         try:
             response = requests.get(
-                self._endpoint("cluster_documents"),
+                self._endpoint("cinedrive_cluster"),
                 headers=self._headers(),
                 params={
                     "namespace": f"eq.{self.namespace}",
-                    "document_key": f"eq.{document_key}",
+                    "record_type": "eq.document",
+                    "record_key": f"eq.{document_key}",
                     "select": "data,updated_at,updated_by",
                     "limit": "1",
                 },
@@ -177,15 +178,16 @@ class ClusterStore:
                         final_data = list(indexed.values())
                 payload = {
                     "namespace": self.namespace,
-                    "document_key": document_key,
+                    "record_type": "document",
+                    "record_key": document_key,
                     "data": final_data,
                     "updated_by": self.worker_id,
                     "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 }
                 response = requests.post(
-                    self._endpoint("cluster_documents"),
+                    self._endpoint("cinedrive_cluster"),
                     headers=self._headers("resolution=merge-duplicates,return=minimal"),
-                    params={"on_conflict": "namespace,document_key"},
+                    params={"on_conflict": "namespace,record_type,record_key"},
                     json=payload,
                     timeout=25,
                 )
@@ -200,19 +202,27 @@ class ClusterStore:
     def heartbeat(self) -> None:
         if not self.enabled:
             return
-        payload = {
-            "namespace": self.namespace,
+        last_seen = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        worker_data = {
             "worker_id": self.worker_id,
             "hostname": self.hostname,
             "version": CLUSTER_VERSION,
-            "last_seen": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "last_seen": last_seen,
             "metadata": {"pid": os.getpid(), "cpu_count": CPU_COUNT},
+        }
+        payload = {
+            "namespace": self.namespace,
+            "record_type": "worker",
+            "record_key": self.worker_id,
+            "data": worker_data,
+            "updated_by": self.worker_id,
+            "updated_at": last_seen,
         }
         try:
             response = requests.post(
-                self._endpoint("cluster_workers"),
+                self._endpoint("cinedrive_cluster"),
                 headers=self._headers("resolution=merge-duplicates,return=minimal"),
-                params={"on_conflict": "namespace,worker_id"},
+                params={"on_conflict": "namespace,record_type,record_key"},
                 json=payload,
                 timeout=20,
             )
@@ -226,13 +236,27 @@ class ClusterStore:
             return []
         try:
             response = requests.get(
-                self._endpoint("cluster_workers"),
+                self._endpoint("cinedrive_cluster"),
                 headers=self._headers(),
-                params={"namespace": f"eq.{self.namespace}", "select": "*", "order": "last_seen.desc"},
+                params={
+                    "namespace": f"eq.{self.namespace}",
+                    "record_type": "eq.worker",
+                    "select": "record_key,data,updated_at,updated_by",
+                    "order": "updated_at.desc",
+                },
                 timeout=20,
             )
             response.raise_for_status()
-            return response.json()
+            rows = response.json()
+            workers: list[dict[str, Any]] = []
+            for row in rows:
+                data = row.get("data") if isinstance(row, dict) else None
+                worker = dict(data) if isinstance(data, dict) else {}
+                worker.setdefault("worker_id", row.get("record_key") if isinstance(row, dict) else "")
+                worker.setdefault("last_seen", row.get("updated_at") if isinstance(row, dict) else "")
+                workers.append(worker)
+            self.last_error = ""
+            return workers
         except Exception as exc:
             self.last_error = f"workers: {exc}"
             return []

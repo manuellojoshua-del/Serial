@@ -1,4 +1,4 @@
-# CineDrive v11 Cluster — Ready Deploy
+# CineDrive v11.0.1 Cluster Fix — Ready Deploy
 
 Dibangun dari CineDrive v10.6.2.2. Semua fitur TMDB, serial, subtitle, Smart Watermark Safe Area, H.265 Turbo, dan Telegram Local Bot API dipertahankan.
 
@@ -42,3 +42,8 @@ Pada Railway kedua, gunakan `CLUSTER_WORKER_ID=railway-2`. Namespace, URL, dan k
 5. Buka `https://DOMAIN/cluster-status`.
 
 Saat konfigurasi benar, `enabled` bernilai `true` dan daftar worker muncul. Bila `enabled` bernilai `false`, periksa `SUPABASE_URL` dan `SUPABASE_SERVICE_ROLE_KEY`.
+
+
+## v11.0.1 Cluster Fix
+
+Versi ini memakai satu tabel Supabase bernama `cinedrive_cluster` untuk dokumen sinkronisasi dan heartbeat worker. Jalankan ulang `supabase_setup.sql`, lalu redeploy Railway. Endpoint `/cluster-status` tidak lagi mengakses tabel `cluster_workers`.
