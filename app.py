@@ -22,176 +22,8 @@ from bs4 import BeautifulSoup
 from requests_toolbelt.multipart.encoder import MultipartEncoder, MultipartEncoderMonitor
 from flask import Flask, jsonify, redirect, render_template_string, request, url_for, send_file
 
-# ClusterStore ditanam langsung agar deployment tidak bergantung pada file modul terpisah.
-
-class ClusterStore:
-    def __init__(self) -> None:
-        self.url = os.getenv("SUPABASE_URL", "").rstrip("/")
-        self.key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
-        self.namespace = os.getenv("CLUSTER_NAMESPACE", "default").strip() or "default"
-        self.worker_id = os.getenv(
-            "CLUSTER_WORKER_ID",
-            f"{socket.gethostname()}-{uuid.uuid4().hex[:6]}",
-        ).strip()
-        self.enabled = bool(self.url and self.key)
-        self.timeout = max(5, int(os.getenv("CLUSTER_HTTP_TIMEOUT", "20")))
-        self._heartbeat_started = False
-        self._heartbeat_guard = threading.Lock()
-
-    @property
-    def headers(self) -> dict[str, str]:
-        return {
-            "apikey": self.key,
-            "Authorization": f"Bearer {self.key}",
-            "Content-Type": "application/json",
-            "Prefer": "resolution=merge-duplicates,return=representation",
-        }
-
-    def _endpoint(self, table: str = "cinedrive_cluster") -> str:
-        return f"{self.url}/rest/v1/{table}"
-
-    def get_json(self, bucket: str, key: str, default: Any) -> Any:
-        if not self.enabled:
-            return default
-        response = requests.get(
-            self._endpoint(),
-            headers=self.headers,
-            params={
-                "namespace": f"eq.{self.namespace}",
-                "bucket": f"eq.{bucket}",
-                "item_key": f"eq.{key}",
-                "select": "value",
-                "limit": "1",
-            },
-            timeout=self.timeout,
-        )
-        response.raise_for_status()
-        rows = response.json()
-        if not rows:
-            return default
-        value = rows[0].get("value", default)
-        return value
-
-    def put_json(self, bucket: str, key: str, value: Any) -> None:
-        if not self.enabled:
-            return
-        payload = {
-            "namespace": self.namespace,
-            "bucket": bucket,
-            "item_key": key,
-            "value": value,
-            "worker_id": self.worker_id,
-            "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        }
-        response = requests.post(
-            self._endpoint(),
-            headers=self.headers,
-            params={"on_conflict": "namespace,bucket,item_key"},
-            json=payload,
-            timeout=self.timeout,
-        )
-        response.raise_for_status()
-
-    def merge_dict(self, bucket: str, key: str, incoming: dict[str, Any]) -> dict[str, Any]:
-        """Best-effort conflict-safe merge for dictionary documents.
-
-        It retries after reading the latest document. For episode maps this
-        prevents one Railway worker from blindly replacing another worker's data.
-        """
-        if not self.enabled:
-            return incoming
-        last_error: Exception | None = None
-        for _ in range(3):
-            try:
-                current = self.get_json(bucket, key, {})
-                if not isinstance(current, dict):
-                    current = {}
-                merged = self._deep_merge(current, incoming)
-                self.put_json(bucket, key, merged)
-                return merged
-            except Exception as exc:
-                last_error = exc
-                time.sleep(0.35)
-        if last_error:
-            raise last_error
-        return incoming
-
-    @classmethod
-    def _deep_merge(cls, old: dict[str, Any], new: dict[str, Any]) -> dict[str, Any]:
-        result = dict(old)
-        for key, value in new.items():
-            if isinstance(value, dict) and isinstance(result.get(key), dict):
-                result[key] = cls._deep_merge(result[key], value)
-            else:
-                result[key] = value
-        return result
-
-    def heartbeat(self, extra: dict[str, Any] | None = None) -> None:
-        if not self.enabled:
-            return
-        payload = {
-            "worker_id": self.worker_id,
-            "last_seen": int(time.time()),
-            "hostname": socket.gethostname(),
-            "status": "online",
-        }
-        if extra:
-            payload.update(extra)
-        self.put_json("workers", self.worker_id, payload)
-
-    def list_workers(self) -> list[dict[str, Any]]:
-        if not self.enabled:
-            return []
-        response = requests.get(
-            self._endpoint(),
-            headers=self.headers,
-            params={
-                "namespace": f"eq.{self.namespace}",
-                "bucket": "eq.workers",
-                "select": "item_key,value,updated_at",
-                "order": "updated_at.desc",
-                "limit": "100",
-            },
-            timeout=self.timeout,
-        )
-        response.raise_for_status()
-        rows = response.json()
-        result = []
-        now = int(time.time())
-        for row in rows:
-            value = row.get("value") if isinstance(row.get("value"), dict) else {}
-            last_seen = int(value.get("last_seen") or 0)
-            value["online"] = bool(last_seen and now - last_seen <= 120)
-            result.append(value)
-        return result
-
-    def start_heartbeat(self, interval: int = 45) -> None:
-        if not self.enabled:
-            return
-        with self._heartbeat_guard:
-            if self._heartbeat_started:
-                return
-            self._heartbeat_started = True
-
-        def loop() -> None:
-            while True:
-                try:
-                    self.heartbeat()
-                except Exception:
-                    pass
-                time.sleep(max(15, interval))
-
-        threading.Thread(target=loop, name="cluster-heartbeat", daemon=True).start()
-
-
-cluster_store = ClusterStore()
-
-
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024
-
-CLUSTER_ENABLED = cluster_store.enabled
-cluster_store.start_heartbeat()
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 CHANNEL_ID = os.environ["CHANNEL_ID"]
@@ -254,6 +86,191 @@ EPISODE_BUTTONS_PER_ROW = max(
     1,
     min(8, int(os.getenv("EPISODE_BUTTONS_PER_ROW", "5"))),
 )
+
+
+CLUSTER_VERSION = "11.0.0"
+
+
+def _deep_merge_cluster(remote: Any, local: Any) -> Any:
+    """Gabungkan dokumen cluster; nilai lokal terbaru menang, map episode tetap digabung."""
+    if isinstance(remote, dict) and isinstance(local, dict):
+        merged = dict(remote)
+        for key, value in local.items():
+            merged[key] = _deep_merge_cluster(merged.get(key), value) if key in merged else value
+        return merged
+    return local
+
+
+class ClusterStore:
+    """Penyimpanan JSON bersama melalui Supabase PostgREST dengan fallback lokal."""
+
+    def __init__(self) -> None:
+        self.url = os.getenv("SUPABASE_URL", "").strip().rstrip("/")
+        self.key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+        self.namespace = os.getenv("CLUSTER_NAMESPACE", "cinemaxx1-production").strip() or "cinemaxx1-production"
+        self.worker_id = os.getenv("CLUSTER_WORKER_ID", "").strip() or socket.gethostname()
+        self.hostname = socket.gethostname()
+        self.enabled = bool(self.url and self.key)
+        self.last_error = ""
+        self.last_sync_at = 0
+        self._lock = threading.RLock()
+        if self.enabled:
+            threading.Thread(target=self._heartbeat_loop, name="cluster-heartbeat", daemon=True).start()
+
+    def _headers(self, prefer: str = "") -> dict[str, str]:
+        headers = {
+            "apikey": self.key,
+            "Authorization": f"Bearer {self.key}",
+            "Content-Type": "application/json",
+        }
+        if prefer:
+            headers["Prefer"] = prefer
+        return headers
+
+    def _endpoint(self, table: str) -> str:
+        return f"{self.url}/rest/v1/{table}"
+
+    def get_document(self, document_key: str, default: Any) -> Any:
+        if not self.enabled:
+            return default
+        try:
+            response = requests.get(
+                self._endpoint("cluster_documents"),
+                headers=self._headers(),
+                params={
+                    "namespace": f"eq.{self.namespace}",
+                    "document_key": f"eq.{document_key}",
+                    "select": "data,updated_at,updated_by",
+                    "limit": "1",
+                },
+                timeout=20,
+            )
+            response.raise_for_status()
+            rows = response.json()
+            self.last_error = ""
+            self.last_sync_at = int(time.time())
+            if rows and isinstance(rows[0].get("data"), type(default)):
+                return rows[0]["data"]
+        except Exception as exc:
+            self.last_error = f"get {document_key}: {exc}"
+        return default
+
+    def save_document(self, document_key: str, data: Any, merge: bool = True) -> Any:
+        if not self.enabled:
+            return data
+        with self._lock:
+            try:
+                final_data = data
+                if merge:
+                    remote = self.get_document(document_key, {} if isinstance(data, dict) else [] if isinstance(data, list) else data)
+                    if isinstance(data, dict) and isinstance(remote, dict):
+                        final_data = _deep_merge_cluster(remote, data)
+                    elif isinstance(data, list) and isinstance(remote, list):
+                        # Deduplicate topic/scan records using stable JSON representation.
+                        indexed: dict[str, Any] = {}
+                        for item in remote + data:
+                            if isinstance(item, dict):
+                                identity = str(item.get("chat_id") or item.get("update_id") or item.get("id") or json.dumps(item, sort_keys=True, ensure_ascii=False))
+                            else:
+                                identity = json.dumps(item, sort_keys=True, ensure_ascii=False)
+                            indexed[identity] = item
+                        final_data = list(indexed.values())
+                payload = {
+                    "namespace": self.namespace,
+                    "document_key": document_key,
+                    "data": final_data,
+                    "updated_by": self.worker_id,
+                    "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                }
+                response = requests.post(
+                    self._endpoint("cluster_documents"),
+                    headers=self._headers("resolution=merge-duplicates,return=minimal"),
+                    params={"on_conflict": "namespace,document_key"},
+                    json=payload,
+                    timeout=25,
+                )
+                response.raise_for_status()
+                self.last_error = ""
+                self.last_sync_at = int(time.time())
+                return final_data
+            except Exception as exc:
+                self.last_error = f"save {document_key}: {exc}"
+                return data
+
+    def heartbeat(self) -> None:
+        if not self.enabled:
+            return
+        payload = {
+            "namespace": self.namespace,
+            "worker_id": self.worker_id,
+            "hostname": self.hostname,
+            "version": CLUSTER_VERSION,
+            "last_seen": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "metadata": {"pid": os.getpid(), "cpu_count": CPU_COUNT},
+        }
+        try:
+            response = requests.post(
+                self._endpoint("cluster_workers"),
+                headers=self._headers("resolution=merge-duplicates,return=minimal"),
+                params={"on_conflict": "namespace,worker_id"},
+                json=payload,
+                timeout=20,
+            )
+            response.raise_for_status()
+            self.last_error = ""
+        except Exception as exc:
+            self.last_error = f"heartbeat: {exc}"
+
+    def workers(self) -> list[dict[str, Any]]:
+        if not self.enabled:
+            return []
+        try:
+            response = requests.get(
+                self._endpoint("cluster_workers"),
+                headers=self._headers(),
+                params={"namespace": f"eq.{self.namespace}", "select": "*", "order": "last_seen.desc"},
+                timeout=20,
+            )
+            response.raise_for_status()
+            return response.json()
+        except Exception as exc:
+            self.last_error = f"workers: {exc}"
+            return []
+
+    def status(self) -> dict[str, Any]:
+        self.heartbeat()
+        workers = self.workers()
+        now = time.time()
+        active = []
+        for worker in workers:
+            raw = str(worker.get("last_seen") or "")
+            try:
+                stamp = time.mktime(time.strptime(raw[:19], "%Y-%m-%dT%H:%M:%S"))
+                worker["active"] = (now - stamp) <= 120
+            except Exception:
+                worker["active"] = False
+            if worker["active"]:
+                active.append(worker)
+        return {
+            "success": True,
+            "enabled": self.enabled,
+            "version": CLUSTER_VERSION,
+            "namespace": self.namespace,
+            "worker_id": self.worker_id,
+            "hostname": self.hostname,
+            "active_worker_count": len(active),
+            "workers": workers,
+            "last_sync_at": self.last_sync_at,
+            "last_error": self.last_error,
+        }
+
+    def _heartbeat_loop(self) -> None:
+        while True:
+            self.heartbeat()
+            time.sleep(30)
+
+
+cluster_store = ClusterStore()
 
 
 
@@ -399,30 +416,21 @@ def parse_topic_options(raw: str) -> list[dict[str, Any]]:
     return options
 
 def load_discovered_topics() -> list[dict[str, Any]]:
-    if CLUSTER_ENABLED:
-        try:
-            data = cluster_store.get_json("metadata", "topics", [])
-            if isinstance(data, list):
-                return data
-        except Exception:
-            pass
+    local: list[dict[str, Any]] = []
     try:
         if TOPIC_STORE_PATH.exists():
             data = json.loads(TOPIC_STORE_PATH.read_text(encoding="utf-8"))
             if isinstance(data, list):
-                return data
+                local = data
     except Exception:
         pass
-    return []
+    remote = cluster_store.get_document("topics", local)
+    return remote if isinstance(remote, list) else local
 
 def save_discovered_topics(topics: list[dict[str, Any]]) -> None:
+    topics = cluster_store.save_document("topics", topics, merge=True)
     TOPIC_STORE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    TOPIC_STORE_PATH.write_text(
-        json.dumps(topics, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-    if CLUSTER_ENABLED:
-        cluster_store.put_json("metadata", "topics", topics)
+    TOPIC_STORE_PATH.write_text(json.dumps(topics, ensure_ascii=False, indent=2), encoding="utf-8")
 
 def get_topic_options() -> list[dict[str, Any]]:
     merged: dict[tuple[str, int], dict[str, Any]] = {}
@@ -445,23 +453,17 @@ series_store_lock = threading.Lock()
 
 def load_series_store() -> dict[str, Any]:
     with series_store_lock:
-        if CLUSTER_ENABLED:
-            try:
-                data = cluster_store.get_json("metadata", "series", {})
-                if isinstance(data, dict):
-                    return data
-            except Exception:
-                pass
+        local: dict[str, Any] = {}
         try:
             if SERIES_STORE_PATH.exists():
-                data = json.loads(
-                    SERIES_STORE_PATH.read_text(encoding="utf-8")
-                )
+                data = json.loads(SERIES_STORE_PATH.read_text(encoding="utf-8"))
                 if isinstance(data, dict):
-                    return data
+                    local = data
         except Exception:
             pass
-        return {}
+        remote = cluster_store.get_document("series", local)
+        merged = _deep_merge_cluster(local, remote) if isinstance(remote, dict) else local
+        return merged if isinstance(merged, dict) else {}
 
 def backup_series_store(data: dict[str, Any], reason: str = "auto") -> Path:
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
@@ -484,22 +486,11 @@ def save_series_store(data: dict[str, Any], reason: str = "update") -> None:
                     backup_series_store(previous, reason=f"before-{reason}")
             except Exception:
                 pass
+        data = cluster_store.save_document("series", data, merge=True)
         temp_path = SERIES_STORE_PATH.with_suffix(".tmp")
-        temp_path.write_text(
-            json.dumps(data, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        temp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
         temp_path.replace(SERIES_STORE_PATH)
         backup_series_store(data, reason=reason)
-        if CLUSTER_ENABLED:
-            merged = cluster_store.merge_dict("metadata", "series", data)
-            # Keep the local cache aligned with the merged cluster document.
-            temp_cluster_path = SERIES_STORE_PATH.with_suffix(".cluster.tmp")
-            temp_cluster_path.write_text(
-                json.dumps(merged, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
-            temp_cluster_path.replace(SERIES_STORE_PATH)
 
 def storage_status() -> dict[str, Any]:
     persistent = str(SERIES_STORE_PATH).startswith("/data/")
@@ -780,7 +771,7 @@ PANEL_HTML = r"""
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>CineDrive Studio v11.0.1 Cluster Ready · Smart Watermark Safe Area</title>
+<title>CineDrive Studio v10.6.2.2 Turbo · Smart Watermark Safe Area</title>
 
 <style>
 :root{
@@ -894,7 +885,7 @@ button:active{transform:translateY(0) scale(.995)}
 </nav>
 <div class="wrap">
   <div class="card page-section" id="homeSection">
-    <h1>🎬 CineDrive Studio v11.0.1 Cluster Ready · Smart Watermark Safe Area</h1>
+    <h1>🎬 CineDrive Studio v10.6.2.2 Turbo · Smart Watermark Safe Area</h1>
     <p class="muted">Pilih menu di navigasi untuk mencari film, mengelola serial, atau melihat antrean tanpa perlu menggulir halaman panjang.</p>
     <div class="batch-help"><strong>Status penyimpanan:</strong> {% if storage.persistent %}<span class="SUCCESS">Permanen</span>{% else %}<span class="ERROR">Sementara</span>{% endif %}<br><span class="muted">Serial: {{ storage.series_path }}<br>Topic: {{ storage.topic_path }}<br>Backup: {{ storage.backup_dir }}</span>{% if storage.warning %}<p class="error">{{ storage.warning }}</p>{% endif %}</div>
   </div>
@@ -1546,22 +1537,23 @@ def scan_recent_topics() -> dict[str, Any]:
 
 
 def load_scan_results() -> list[dict[str, Any]]:
+    local: list[dict[str, Any]] = []
     try:
         if SCAN_STORE_PATH.exists():
             data = json.loads(SCAN_STORE_PATH.read_text(encoding="utf-8"))
             if isinstance(data, list):
-                return data
+                local = data
     except Exception:
         pass
-    return []
-
+    remote = cluster_store.get_document("scan_results", local)
+    return remote if isinstance(remote, list) else local
 
 def save_scan_results(items: list[dict[str, Any]]) -> None:
+    items = cluster_store.save_document("scan_results", items, merge=True)
     SCAN_STORE_PATH.parent.mkdir(parents=True, exist_ok=True)
     temp_path = SCAN_STORE_PATH.with_suffix(".tmp")
     temp_path.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
     temp_path.replace(SCAN_STORE_PATH)
-
 
 def _telegram_message_from_update(update: dict[str, Any]) -> dict[str, Any] | None:
     return (
@@ -2817,7 +2809,7 @@ LANDING_HTML = r"""
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#070910">
-<title>CINEMAXX1 · CineDrive Studio v11.0.1 Cluster Ready · Smart Watermark Safe Area</title>
+<title>CINEMAXX1 · CineDrive Studio v10.6.2.2 · Smart Watermark Safe Area</title>
 <style>
 :root{color-scheme:dark;--bg:#06070b;--panel:rgba(15,17,24,.78);--line:rgba(255,255,255,.11);--gold:#f7c75f;--gold2:#fff1ad;--text:#fff;--muted:#a8acb8;--ok:#43e39f}
 *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;min-height:100vh;font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;color:var(--text);background:#06070b;overflow-x:hidden}
@@ -2839,7 +2831,7 @@ body:before{content:"";position:fixed;inset:0;background:radial-gradient(circle 
 <div class="login" id="login"><h2>Masuk ke panel</h2><p>Masukkan SECRET_KEY Railway untuk membuka dashboard pengelolaan.</p><form method="get" action="/panel"><label>SECRET KEY</label><input type="password" name="key" autocomplete="current-password" placeholder="Masukkan kunci akses" required><button type="submit">Masuk ke Dashboard</button></form><p class="tiny">Kunci dipakai untuk autentikasi panel dan tidak disimpan oleh halaman ini.</p></div></section>
 <section class="stats"><div class="stat"><span>SERIAL TERSIMPAN</span><b>{{ stats.series }}</b></div><div class="stat"><span>TOTAL EPISODE</span><b>{{ stats.episodes }}</b></div><div class="stat"><span>ANTREAN AKTIF</span><b>{{ stats.active_jobs }}</b></div><div class="stat"><span>VERSI APLIKASI</span><b>10.6</b></div></section>
 <section class="features"><article class="feature"><i>🎞️</i><h3>Encoding Telegram</h3><p>H.265 hemat ukuran dengan fallback H.264 dan target hasil di bawah 1,5 GB.</p></article><article class="feature"><i>📺</i><h3>Pengelolaan Serial</h3><p>Tambah episode, perbarui posting utama, pulihkan data, dan kelola tombol episode.</p></article><article class="feature"><i>🗄️</i><h3>Data Permanen</h3><p>Backup, ekspor, impor, dan pemulihan data yang tersimpan pada Railway Volume.</p></article></section>
-<footer class="foot"><span>© 2026 CINEMAXX1</span><span>CineDrive Studio v11.0.1 Cluster Ready · Smart Watermark Safe Area · Railway</span></footer>
+<footer class="foot"><span>© 2026 CINEMAXX1</span><span>CineDrive Studio v10.6.2.2 · Smart Watermark Safe Area · Railway</span></footer>
 </main></body></html>
 """
 
@@ -2867,7 +2859,29 @@ def home():
 
 @app.get("/health")
 def health():
-    return jsonify({"success": True, "status": "ok"})
+    return jsonify({"success": True, "status": "ok", "version": CLUSTER_VERSION, "cluster_enabled": cluster_store.enabled})
+
+@app.get("/cluster-status")
+def cluster_status():
+    return jsonify(cluster_store.status())
+
+@app.get("/cluster-workers")
+def cluster_workers():
+    status = cluster_store.status()
+    return jsonify({"success": True, "enabled": status["enabled"], "namespace": status["namespace"], "workers": status["workers"]})
+
+@app.post("/cluster-sync")
+def cluster_sync():
+    if not authorized():
+        return jsonify({"success": False, "error": "Unauthorized"}), 401
+    # Membaca data remote lalu menulis cache lokal melalui fungsi penyimpanan normal.
+    series = load_series_store()
+    topics = load_discovered_topics()
+    scans = load_scan_results()
+    save_series_store(series, reason="cluster-sync")
+    save_discovered_topics(topics)
+    save_scan_results(scans)
+    return jsonify({"success": True, "series": len(series), "topics": len(topics), "scan_results": len(scans), "cluster": cluster_store.status()})
 
 @app.get("/panel")
 def panel():
@@ -3141,7 +3155,7 @@ def batch_enqueue():
             episode_lines,
             subtitle_mode,
         )
-        batch_logo_dir = Path(tempfile.mkdtemp(prefix="watermark-batch-v11-cluster-"))
+        batch_logo_dir = Path(tempfile.mkdtemp(prefix="watermark-batch-v10-6-2-2-"))
         try:
             batch_watermark = save_watermark_upload("batch_watermark", batch_logo_dir)
         except Exception:
@@ -3177,7 +3191,7 @@ def batch_enqueue():
                 job_id = uuid.uuid4().hex[:12]
                 work_dir = Path(
                     tempfile.mkdtemp(
-                        prefix=f"drive-telegram-v11-cluster-{job_id}-"
+                        prefix=f"drive-telegram-v10-6-2-2-{job_id}-"
                     )
                 )
 
@@ -3437,7 +3451,7 @@ def add_saved_episode():
         with queue_condition:
             active=sum(1 for i in jobs.values() if i["state"] in {"QUEUED","DOWNLOADING","PROCESSING","UPLOADING"})
             if active>=MAX_QUEUE: raise ValueError(f"Antrean penuh. Maksimal {MAX_QUEUE}")
-            jid=uuid.uuid4().hex[:12]; wd=Path(tempfile.mkdtemp(prefix=f"drive-telegram-v11-cluster-{jid}-"))
+            jid=uuid.uuid4().hex[:12]; wd=Path(tempfile.mkdtemp(prefix=f"drive-telegram-v10-6-2-2-{jid}-"))
             watermark_config=save_watermark_upload("saved_watermark",wd)
             chat=str(series.get("target_chat_id") or CHANNEL_ID); thread=int(series.get("message_thread_id") or 0)
             jobs[jid]={"id":jid,"file_id":video_id,"title":meta["title"],"metadata":meta,"tmdb_id":int(series.get("tmdb_id") or 0),"season_number":int(series.get("season_number") or 1),"episode_number":ep,"target_chat_id":chat,"message_thread_id":thread,"topic_name":str(series.get("topic_name") or topic_name_from_id(thread,chat)),"extra_caption":str(request.form.get("saved_extra_caption") or "").strip(),"subtitle_mode":mode,"uploaded_subtitle":"","subtitle_drive_file_id":sub_id,"public_folder_id":public_folder_id,"subtitle_info":"Menunggu pemeriksaan","work_dir":str(wd),"state":"QUEUED","message":"Menunggu giliran.","created_at":now_ts(),"started_at":None,"finished_at":None,"downloaded_bytes":0,"total_bytes":0,"file_size_bytes":0,"message_id":None,"error":None,"stage_progress":0.0,"overall_progress":0.0,"progress_detail":"Menunggu giliran.","eta_seconds":0,"eta_human":"-","manual_mode":bool(series.get("manual")),"saved_series_key":series_key,**watermark_config,**parse_encode_config("saved_")}
@@ -3473,7 +3487,7 @@ def manual_enqueue():
             active_count = sum(1 for item in jobs.values() if item["state"] in {"QUEUED","DOWNLOADING","PROCESSING","UPLOADING"})
             if active_count >= MAX_QUEUE: raise ValueError(f"Antrean penuh. Maksimal {MAX_QUEUE}.")
             job_id = uuid.uuid4().hex[:12]
-            work_dir = Path(tempfile.mkdtemp(prefix=f"drive-telegram-v11-cluster-{job_id}-"))
+            work_dir = Path(tempfile.mkdtemp(prefix=f"drive-telegram-v10-6-2-2-{job_id}-"))
             watermark_config = save_watermark_upload("manual_watermark", work_dir)
             manual_media_type = str(request.form.get("manual_media_type") or "movie")
             season_number = int(request.form.get("manual_season_number") or "1") if manual_media_type == "tv" else None
@@ -3546,7 +3560,7 @@ def enqueue():
             return jsonify({"success": False, "error": f"Antrean penuh. Maksimal {MAX_QUEUE} pekerjaan."}), 429
 
         job_id = uuid.uuid4().hex[:12]
-        work_dir = Path(tempfile.mkdtemp(prefix=f"drive-telegram-v11-cluster-{job_id}-"))
+        work_dir = Path(tempfile.mkdtemp(prefix=f"drive-telegram-v10-6-2-2-{job_id}-"))
         try:
             watermark_config = save_watermark_upload("watermark", work_dir)
         except Exception:
@@ -3635,28 +3649,4 @@ def api_jobs():
     return jsonify({"success": True, "jobs": get_jobs_snapshot()})
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "8080")))@app.route("/cluster-status")
-def cluster_status():
-    if not CLUSTER_ENABLED:
-        return jsonify({
-            "enabled": False,
-            "worker_id": cluster_store.worker_id,
-            "message": "SUPABASE_URL atau SUPABASE_SERVICE_ROLE_KEY belum diisi.",
-        })
-    try:
-        workers = cluster_store.list_workers()
-        return jsonify({
-            "enabled": True,
-            "namespace": cluster_store.namespace,
-            "worker_id": cluster_store.worker_id,
-            "workers": workers,
-        })
-    except Exception as exc:
-        return jsonify({
-            "enabled": True,
-            "worker_id": cluster_store.worker_id,
-            "error": str(exc),
-        }), 503
-
-
-
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "8080")))

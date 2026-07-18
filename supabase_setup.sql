@@ -1,19 +1,25 @@
--- CineDrive v11 Cluster — jalankan di Supabase SQL Editor.
-create table if not exists public.cinedrive_cluster (
+-- CineDrive v11 Cluster — jalankan sekali di Supabase SQL Editor
+create table if not exists public.cluster_documents (
   namespace text not null,
-  bucket text not null,
-  item_key text not null,
-  value jsonb not null default '{}'::jsonb,
-  worker_id text,
+  document_key text not null,
+  data jsonb not null default '{}'::jsonb,
+  updated_by text,
   updated_at timestamptz not null default now(),
-  primary key (namespace, bucket, item_key)
+  primary key (namespace, document_key)
 );
 
-create index if not exists cinedrive_cluster_bucket_idx
-  on public.cinedrive_cluster(namespace, bucket, updated_at desc);
+create table if not exists public.cluster_workers (
+  namespace text not null,
+  worker_id text not null,
+  hostname text,
+  version text,
+  last_seen timestamptz not null default now(),
+  metadata jsonb not null default '{}'::jsonb,
+  primary key (namespace, worker_id)
+);
 
-alter table public.cinedrive_cluster enable row level security;
+create index if not exists cluster_workers_last_seen_idx on public.cluster_workers(namespace,last_seen desc);
 
--- Service role key bypasses RLS. Jangan gunakan anon key pada Railway.
-revoke all on public.cinedrive_cluster from anon, authenticated;
-grant all on public.cinedrive_cluster to service_role;
+alter table public.cluster_documents enable row level security;
+alter table public.cluster_workers enable row level security;
+-- Aplikasi memakai service_role key, yang melewati RLS. Jangan simpan key tersebut di GitHub.
