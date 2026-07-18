@@ -1,3 +1,88 @@
+# CineDrive v11 Cluster
+
+Versi ini mempertahankan fitur v10.6.2.2 dan menambahkan sinkronisasi metadata
+antar beberapa akun/service Railway menggunakan Supabase.
+
+## Yang tersinkron
+
+- Serial tersimpan dan daftar episode.
+- Message ID posting indeks Telegram.
+- Topic/thread Telegram hasil scan.
+- Metadata TMDB yang disimpan bersama serial.
+- Daftar worker aktif melalui heartbeat.
+- Cache lokal tetap dibuat pada `/data` sebagai cadangan.
+
+## Batasan penting
+
+Video, subtitle upload, logo upload, file FFmpeg sementara, dan proses encode tetap
+berada di worker Railway yang menerima pekerjaan. File besar tidak disalin melalui
+Supabase. Karena itu, antrean encode belum dipindahkan otomatis ke worker lain
+setelah proses sudah berjalan. Sinkronisasi ini berfokus pada data serial agar
+beberapa akun Railway tidak memakai daftar episode yang berbeda.
+
+## Menyiapkan Supabase
+
+1. Buat project Supabase.
+2. Buka **SQL Editor**.
+3. Jalankan seluruh isi `supabase_setup.sql`.
+4. Buka **Project Settings → API**.
+5. Salin Project URL dan `service_role` key. Jangan memakai anon key.
+
+## Variables pada setiap Railway
+
+Gunakan nilai Supabase dan namespace yang sama:
+
+```env
+SUPABASE_URL=https://PROJECT_ID.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=SERVICE_ROLE_KEY
+CLUSTER_NAMESPACE=cinemaxx1-production
+```
+
+Gunakan Worker ID berbeda:
+
+Railway pertama:
+
+```env
+CLUSTER_WORKER_ID=railway-1
+```
+
+Railway kedua:
+
+```env
+CLUSTER_WORKER_ID=railway-2
+```
+
+Railway ketiga:
+
+```env
+CLUSTER_WORKER_ID=railway-3
+```
+
+Variabel lain seperti `BOT_TOKEN`, `TMDB_API_KEY`, target channel, dan Local Bot
+API tetap diisi seperti sebelumnya.
+
+## Memeriksa cluster
+
+Buka:
+
+```text
+https://DOMAIN-PANEL/cluster-status
+```
+
+Respons menampilkan namespace, Worker ID, dan worker yang masih aktif. Worker
+dianggap aktif jika heartbeat diterima dalam dua menit terakhir.
+
+## Cara kerja konflik episode
+
+Setiap perubahan serial disimpan lokal lalu digabungkan dengan dokumen terbaru
+di Supabase. Map episode digabung secara rekursif, sehingga Episode 1 yang dibuat
+worker A tidak hilang saat worker B menambahkan Episode 2.
+
+Untuk keamanan, `SUPABASE_SERVICE_ROLE_KEY` hanya boleh disimpan di Variables
+Railway dan tidak boleh dimasukkan ke GitHub.
+
+---
+
 # Google Drive → Telegram v10.6.2.2 — Smart Watermark v2
 
 Versi ini menambahkan watermark logo yang benar-benar ditanam ke gambar film saat proses FFmpeg. Logo tetap terlihat ketika video diputar, diunduh, atau diteruskan.

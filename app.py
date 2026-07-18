@@ -21,8 +21,13 @@ from bs4 import BeautifulSoup
 from requests_toolbelt.multipart.encoder import MultipartEncoder, MultipartEncoderMonitor
 from flask import Flask, jsonify, redirect, render_template_string, request, url_for, send_file
 
+from cluster_store import cluster_store
+
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024
+
+CLUSTER_ENABLED = cluster_store.enabled
+cluster_store.start_heartbeat()
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 CHANNEL_ID = os.environ["CHANNEL_ID"]
@@ -230,6 +235,13 @@ def parse_topic_options(raw: str) -> list[dict[str, Any]]:
     return options
 
 def load_discovered_topics() -> list[dict[str, Any]]:
+    if CLUSTER_ENABLED:
+        try:
+            data = cluster_store.get_json("metadata", "topics", [])
+            if isinstance(data, list):
+                return data
+        except Exception:
+            pass
     try:
         if TOPIC_STORE_PATH.exists():
             data = json.loads(TOPIC_STORE_PATH.read_text(encoding="utf-8"))
@@ -245,6 +257,8 @@ def save_discovered_topics(topics: list[dict[str, Any]]) -> None:
         json.dumps(topics, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+    if CLUSTER_ENABLED:
+        cluster_store.put_json("metadata", "topics", topics)
 
 def get_topic_options() -> list[dict[str, Any]]:
     merged: dict[tuple[str, int], dict[str, Any]] = {}
@@ -267,6 +281,13 @@ series_store_lock = threading.Lock()
 
 def load_series_store() -> dict[str, Any]:
     with series_store_lock:
+        if CLUSTER_ENABLED:
+            try:
+                data = cluster_store.get_json("metadata", "series", {})
+                if isinstance(data, dict):
+                    return data
+            except Exception:
+                pass
         try:
             if SERIES_STORE_PATH.exists():
                 data = json.loads(
@@ -306,6 +327,15 @@ def save_series_store(data: dict[str, Any], reason: str = "update") -> None:
         )
         temp_path.replace(SERIES_STORE_PATH)
         backup_series_store(data, reason=reason)
+        if CLUSTER_ENABLED:
+            merged = cluster_store.merge_dict("metadata", "series", data)
+            # Keep the local cache aligned with the merged cluster document.
+            temp_cluster_path = SERIES_STORE_PATH.with_suffix(".cluster.tmp")
+            temp_cluster_path.write_text(
+                json.dumps(merged, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            temp_cluster_path.replace(SERIES_STORE_PATH)
 
 def storage_status() -> dict[str, Any]:
     persistent = str(SERIES_STORE_PATH).startswith("/data/")
@@ -586,7 +616,7 @@ PANEL_HTML = r"""
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>CineDrive Studio v10.6.2.2 Turbo · Smart Watermark Safe Area</title>
+<title>CineDrive Studio v11 Cluster · Smart Watermark Safe Area</title>
 
 <style>
 :root{
@@ -700,7 +730,7 @@ button:active{transform:translateY(0) scale(.995)}
 </nav>
 <div class="wrap">
   <div class="card page-section" id="homeSection">
-    <h1>🎬 CineDrive Studio v10.6.2.2 Turbo · Smart Watermark Safe Area</h1>
+    <h1>🎬 CineDrive Studio v11 Cluster · Smart Watermark Safe Area</h1>
     <p class="muted">Pilih menu di navigasi untuk mencari film, mengelola serial, atau melihat antrean tanpa perlu menggulir halaman panjang.</p>
     <div class="batch-help"><strong>Status penyimpanan:</strong> {% if storage.persistent %}<span class="SUCCESS">Permanen</span>{% else %}<span class="ERROR">Sementara</span>{% endif %}<br><span class="muted">Serial: {{ storage.series_path }}<br>Topic: {{ storage.topic_path }}<br>Backup: {{ storage.backup_dir }}</span>{% if storage.warning %}<p class="error">{{ storage.warning }}</p>{% endif %}</div>
   </div>
@@ -2623,7 +2653,7 @@ LANDING_HTML = r"""
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#070910">
-<title>CINEMAXX1 · CineDrive Studio v10.6.2.2 · Smart Watermark Safe Area</title>
+<title>CINEMAXX1 · CineDrive Studio v11 Cluster · Smart Watermark Safe Area</title>
 <style>
 :root{color-scheme:dark;--bg:#06070b;--panel:rgba(15,17,24,.78);--line:rgba(255,255,255,.11);--gold:#f7c75f;--gold2:#fff1ad;--text:#fff;--muted:#a8acb8;--ok:#43e39f}
 *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;min-height:100vh;font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;color:var(--text);background:#06070b;overflow-x:hidden}
@@ -2645,7 +2675,7 @@ body:before{content:"";position:fixed;inset:0;background:radial-gradient(circle 
 <div class="login" id="login"><h2>Masuk ke panel</h2><p>Masukkan SECRET_KEY Railway untuk membuka dashboard pengelolaan.</p><form method="get" action="/panel"><label>SECRET KEY</label><input type="password" name="key" autocomplete="current-password" placeholder="Masukkan kunci akses" required><button type="submit">Masuk ke Dashboard</button></form><p class="tiny">Kunci dipakai untuk autentikasi panel dan tidak disimpan oleh halaman ini.</p></div></section>
 <section class="stats"><div class="stat"><span>SERIAL TERSIMPAN</span><b>{{ stats.series }}</b></div><div class="stat"><span>TOTAL EPISODE</span><b>{{ stats.episodes }}</b></div><div class="stat"><span>ANTREAN AKTIF</span><b>{{ stats.active_jobs }}</b></div><div class="stat"><span>VERSI APLIKASI</span><b>10.6</b></div></section>
 <section class="features"><article class="feature"><i>🎞️</i><h3>Encoding Telegram</h3><p>H.265 hemat ukuran dengan fallback H.264 dan target hasil di bawah 1,5 GB.</p></article><article class="feature"><i>📺</i><h3>Pengelolaan Serial</h3><p>Tambah episode, perbarui posting utama, pulihkan data, dan kelola tombol episode.</p></article><article class="feature"><i>🗄️</i><h3>Data Permanen</h3><p>Backup, ekspor, impor, dan pemulihan data yang tersimpan pada Railway Volume.</p></article></section>
-<footer class="foot"><span>© 2026 CINEMAXX1</span><span>CineDrive Studio v10.6.2.2 · Smart Watermark Safe Area · Railway</span></footer>
+<footer class="foot"><span>© 2026 CINEMAXX1</span><span>CineDrive Studio v11 Cluster · Smart Watermark Safe Area · Railway</span></footer>
 </main></body></html>
 """
 
@@ -2947,7 +2977,7 @@ def batch_enqueue():
             episode_lines,
             subtitle_mode,
         )
-        batch_logo_dir = Path(tempfile.mkdtemp(prefix="watermark-batch-v10-6-2-2-"))
+        batch_logo_dir = Path(tempfile.mkdtemp(prefix="watermark-batch-v11-cluster-"))
         try:
             batch_watermark = save_watermark_upload("batch_watermark", batch_logo_dir)
         except Exception:
@@ -2983,7 +3013,7 @@ def batch_enqueue():
                 job_id = uuid.uuid4().hex[:12]
                 work_dir = Path(
                     tempfile.mkdtemp(
-                        prefix=f"drive-telegram-v10-6-2-2-{job_id}-"
+                        prefix=f"drive-telegram-v11-cluster-{job_id}-"
                     )
                 )
 
@@ -3243,7 +3273,7 @@ def add_saved_episode():
         with queue_condition:
             active=sum(1 for i in jobs.values() if i["state"] in {"QUEUED","DOWNLOADING","PROCESSING","UPLOADING"})
             if active>=MAX_QUEUE: raise ValueError(f"Antrean penuh. Maksimal {MAX_QUEUE}")
-            jid=uuid.uuid4().hex[:12]; wd=Path(tempfile.mkdtemp(prefix=f"drive-telegram-v10-6-2-2-{jid}-"))
+            jid=uuid.uuid4().hex[:12]; wd=Path(tempfile.mkdtemp(prefix=f"drive-telegram-v11-cluster-{jid}-"))
             watermark_config=save_watermark_upload("saved_watermark",wd)
             chat=str(series.get("target_chat_id") or CHANNEL_ID); thread=int(series.get("message_thread_id") or 0)
             jobs[jid]={"id":jid,"file_id":video_id,"title":meta["title"],"metadata":meta,"tmdb_id":int(series.get("tmdb_id") or 0),"season_number":int(series.get("season_number") or 1),"episode_number":ep,"target_chat_id":chat,"message_thread_id":thread,"topic_name":str(series.get("topic_name") or topic_name_from_id(thread,chat)),"extra_caption":str(request.form.get("saved_extra_caption") or "").strip(),"subtitle_mode":mode,"uploaded_subtitle":"","subtitle_drive_file_id":sub_id,"public_folder_id":public_folder_id,"subtitle_info":"Menunggu pemeriksaan","work_dir":str(wd),"state":"QUEUED","message":"Menunggu giliran.","created_at":now_ts(),"started_at":None,"finished_at":None,"downloaded_bytes":0,"total_bytes":0,"file_size_bytes":0,"message_id":None,"error":None,"stage_progress":0.0,"overall_progress":0.0,"progress_detail":"Menunggu giliran.","eta_seconds":0,"eta_human":"-","manual_mode":bool(series.get("manual")),"saved_series_key":series_key,**watermark_config,**parse_encode_config("saved_")}
@@ -3279,7 +3309,7 @@ def manual_enqueue():
             active_count = sum(1 for item in jobs.values() if item["state"] in {"QUEUED","DOWNLOADING","PROCESSING","UPLOADING"})
             if active_count >= MAX_QUEUE: raise ValueError(f"Antrean penuh. Maksimal {MAX_QUEUE}.")
             job_id = uuid.uuid4().hex[:12]
-            work_dir = Path(tempfile.mkdtemp(prefix=f"drive-telegram-v10-6-2-2-{job_id}-"))
+            work_dir = Path(tempfile.mkdtemp(prefix=f"drive-telegram-v11-cluster-{job_id}-"))
             watermark_config = save_watermark_upload("manual_watermark", work_dir)
             manual_media_type = str(request.form.get("manual_media_type") or "movie")
             season_number = int(request.form.get("manual_season_number") or "1") if manual_media_type == "tv" else None
@@ -3352,7 +3382,7 @@ def enqueue():
             return jsonify({"success": False, "error": f"Antrean penuh. Maksimal {MAX_QUEUE} pekerjaan."}), 429
 
         job_id = uuid.uuid4().hex[:12]
-        work_dir = Path(tempfile.mkdtemp(prefix=f"drive-telegram-v10-6-2-2-{job_id}-"))
+        work_dir = Path(tempfile.mkdtemp(prefix=f"drive-telegram-v11-cluster-{job_id}-"))
         try:
             watermark_config = save_watermark_upload("watermark", work_dir)
         except Exception:
@@ -3441,4 +3471,28 @@ def api_jobs():
     return jsonify({"success": True, "jobs": get_jobs_snapshot()})
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "8080")))
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "8080")))@app.route("/cluster-status")
+def cluster_status():
+    if not CLUSTER_ENABLED:
+        return jsonify({
+            "enabled": False,
+            "worker_id": cluster_store.worker_id,
+            "message": "SUPABASE_URL atau SUPABASE_SERVICE_ROLE_KEY belum diisi.",
+        })
+    try:
+        workers = cluster_store.list_workers()
+        return jsonify({
+            "enabled": True,
+            "namespace": cluster_store.namespace,
+            "worker_id": cluster_store.worker_id,
+            "workers": workers,
+        })
+    except Exception as exc:
+        return jsonify({
+            "enabled": True,
+            "worker_id": cluster_store.worker_id,
+            "error": str(exc),
+        }), 503
+
+
+
