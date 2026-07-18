@@ -88,7 +88,7 @@ EPISODE_BUTTONS_PER_ROW = max(
 )
 
 
-CLUSTER_VERSION = "11.0.3"
+CLUSTER_VERSION = "11.0.3-final.1"
 
 
 def _deep_merge_cluster(remote: Any, local: Any) -> Any:
@@ -136,6 +136,58 @@ class ClusterStore:
 
     def _endpoint(self, table: str) -> str:
         return f"{self.url}/rest/v1/{table}"
+
+
+    def _upsert_record(self, payload: dict[str, Any]) -> None:
+        """Update by canonical identity first; insert only when no row exists.
+
+        This avoids HTTP 409 when a legacy table has more than one unique index.
+        """
+        identity = {
+            "namespace": f"eq.{payload['namespace']}",
+            "record_type": f"eq.{payload['record_type']}",
+            "record_key": f"eq.{payload['record_key']}",
+        }
+        update = requests.patch(
+            self._endpoint("cinedrive_cluster"),
+            headers=self._headers("return=representation"),
+            params=identity,
+            json=payload,
+            timeout=25,
+        )
+        if not update.ok:
+            raise RuntimeError(f"update HTTP {update.status_code}: {update.text[:800]}")
+        try:
+            updated_rows = update.json()
+        except ValueError:
+            updated_rows = []
+        if updated_rows:
+            return
+
+        create = requests.post(
+            self._endpoint("cinedrive_cluster"),
+            headers=self._headers("return=representation"),
+            json=payload,
+            timeout=25,
+        )
+        if create.status_code == 409:
+            # Another worker/request may have inserted the same identity concurrently.
+            retry = requests.patch(
+                self._endpoint("cinedrive_cluster"),
+                headers=self._headers("return=representation"),
+                params=identity,
+                json=payload,
+                timeout=25,
+            )
+            if not retry.ok:
+                raise RuntimeError(f"retry update HTTP {retry.status_code}: {retry.text[:800]}")
+            try:
+                if retry.json():
+                    return
+            except ValueError:
+                pass
+        if not create.ok:
+            raise RuntimeError(f"insert HTTP {create.status_code}: {create.text[:800]}")
 
     def get_document(self, document_key: str, default: Any) -> Any:
         if not self.enabled:
@@ -197,14 +249,7 @@ class ClusterStore:
                     "updated_by": self.worker_id,
                     "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 }
-                response = requests.post(
-                    self._endpoint("cinedrive_cluster"),
-                    headers=self._headers("resolution=merge-duplicates,return=minimal"),
-                    params={"on_conflict": "namespace,bucket,item_key"},
-                    json=payload,
-                    timeout=25,
-                )
-                response.raise_for_status()
+                self._upsert_record(payload)
                 self.last_error = ""
                 self.last_sync_at = int(time.time())
                 return final_data
@@ -237,15 +282,7 @@ class ClusterStore:
             "updated_at": last_seen,
         }
         try:
-            response = requests.post(
-                self._endpoint("cinedrive_cluster"),
-                headers=self._headers("resolution=merge-duplicates,return=representation"),
-                params={"on_conflict": "namespace,bucket,item_key"},
-                json=payload,
-                timeout=20,
-            )
-            if not response.ok:
-                raise RuntimeError(f"HTTP {response.status_code}: {response.text[:800]}")
+            self._upsert_record(payload)
 
             # Read back the exact worker row. This catches schema/RLS/upsert problems early.
             verify = requests.get(

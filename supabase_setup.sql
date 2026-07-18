@@ -1,4 +1,4 @@
--- CineDrive v11.0.3 Cluster Final
+-- CineDrive v11.0.3 Cluster Final Conflict Fix
 -- Jalankan seluruh script ini di Supabase SQL Editor, lalu Redeploy Railway.
 -- Struktur ini kompatibel dengan tabel lama (bucket/item_key/value)
 -- dan struktur v11 (record_type/record_key/data).

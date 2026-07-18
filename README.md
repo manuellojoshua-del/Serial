@@ -1,4 +1,4 @@
-# CineDrive v11.0.3 Cluster Final
+# CineDrive v11.0.3 Cluster Final (Conflict Fix)
 
 Versi ini memperbaiki heartbeat Supabase untuk struktur tabel `cinedrive_cluster` yang memiliki kolom lama dan baru sekaligus.
 
@@ -45,3 +45,7 @@ Untuk Railway kedua gunakan Supabase dan namespace yang sama, tetapi ubah:
 ```env
 CLUSTER_WORKER_ID=railway-2
 ```
+
+
+## Conflict Fix
+Heartbeat dan dokumen sekarang melakukan PATCH berdasarkan `(namespace, record_type, record_key)` terlebih dahulu, lalu INSERT hanya jika data belum ada. Ini memperbaiki HTTP 409 pada tabel lama yang memiliki dua unique index.
