@@ -1,4 +1,4 @@
--- CineDrive v11.0.1 Cluster Fix
+-- CineDrive v11.0.2 Cluster Fix
 -- Jalankan seluruh isi file ini sekali di Supabase SQL Editor.
 -- Script ini menggunakan satu tabel: public.cinedrive_cluster.
 
@@ -27,3 +27,6 @@ create index if not exists cinedrive_cluster_updated_idx
 
 alter table public.cinedrive_cluster enable row level security;
 -- CineDrive harus memakai SUPABASE_SERVICE_ROLE_KEY. Jangan simpan key di GitHub.
+
+-- Pastikan PostgREST melihat perubahan skema terbaru.
+notify pgrst, 'reload schema';

@@ -88,7 +88,7 @@ EPISODE_BUTTONS_PER_ROW = max(
 )
 
 
-CLUSTER_VERSION = "11.0.1"
+CLUSTER_VERSION = "11.0.2"
 
 
 def _deep_merge_cluster(remote: Any, local: Any) -> Any:
@@ -112,10 +112,17 @@ class ClusterStore:
         self.hostname = socket.gethostname()
         self.enabled = bool(self.url and self.key)
         self.last_error = ""
+        self.heartbeat_error = ""
+        self.workers_error = ""
+        self.last_heartbeat_at = 0
         self.last_sync_at = 0
         self._lock = threading.RLock()
         if self.enabled:
+            # Register immediately during Gunicorn worker startup, then refresh periodically.
+            self.heartbeat()
             threading.Thread(target=self._heartbeat_loop, name="cluster-heartbeat", daemon=True).start()
+        else:
+            print("[CLUSTER] disabled: SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY is empty", flush=True)
 
     def _headers(self, prefer: str = "") -> dict[str, str]:
         headers = {
@@ -199,9 +206,10 @@ class ClusterStore:
                 self.last_error = f"save {document_key}: {exc}"
                 return data
 
-    def heartbeat(self) -> None:
+    def heartbeat(self) -> bool:
+        """Register/update this Railway worker and verify that Supabase stored it."""
         if not self.enabled:
-            return
+            return False
         last_seen = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         worker_data = {
             "worker_id": self.worker_id,
@@ -221,15 +229,42 @@ class ClusterStore:
         try:
             response = requests.post(
                 self._endpoint("cinedrive_cluster"),
-                headers=self._headers("resolution=merge-duplicates,return=minimal"),
+                headers=self._headers("resolution=merge-duplicates,return=representation"),
                 params={"on_conflict": "namespace,record_type,record_key"},
                 json=payload,
                 timeout=20,
             )
-            response.raise_for_status()
-            self.last_error = ""
+            if not response.ok:
+                raise RuntimeError(f"HTTP {response.status_code}: {response.text[:800]}")
+
+            # Read back the exact worker row. This catches schema/RLS/upsert problems early.
+            verify = requests.get(
+                self._endpoint("cinedrive_cluster"),
+                headers=self._headers(),
+                params={
+                    "namespace": f"eq.{self.namespace}",
+                    "record_type": "eq.worker",
+                    "record_key": f"eq.{self.worker_id}",
+                    "select": "record_key,data,updated_at",
+                    "limit": "1",
+                },
+                timeout=20,
+            )
+            if not verify.ok:
+                raise RuntimeError(f"verify HTTP {verify.status_code}: {verify.text[:800]}")
+            rows = verify.json()
+            if not rows:
+                raise RuntimeError("heartbeat write returned success but worker row was not found")
+
+            self.heartbeat_error = ""
+            self.last_heartbeat_at = int(time.time())
+            print(f"[CLUSTER] heartbeat OK worker={self.worker_id} namespace={self.namespace}", flush=True)
+            return True
         except Exception as exc:
+            self.heartbeat_error = str(exc)
             self.last_error = f"heartbeat: {exc}"
+            print(f"[CLUSTER] heartbeat ERROR: {exc}", flush=True)
+            return False
 
     def workers(self) -> list[dict[str, Any]]:
         if not self.enabled:
@@ -255,14 +290,16 @@ class ClusterStore:
                 worker.setdefault("worker_id", row.get("record_key") if isinstance(row, dict) else "")
                 worker.setdefault("last_seen", row.get("updated_at") if isinstance(row, dict) else "")
                 workers.append(worker)
-            self.last_error = ""
+            self.workers_error = ""
             return workers
         except Exception as exc:
+            self.workers_error = str(exc)
             self.last_error = f"workers: {exc}"
+            print(f"[CLUSTER] workers ERROR: {exc}", flush=True)
             return []
 
     def status(self) -> dict[str, Any]:
-        self.heartbeat()
+        heartbeat_ok = self.heartbeat()
         workers = self.workers()
         now = time.time()
         active = []
@@ -284,8 +321,12 @@ class ClusterStore:
             "hostname": self.hostname,
             "active_worker_count": len(active),
             "workers": workers,
+            "heartbeat_ok": heartbeat_ok,
+            "last_heartbeat_at": self.last_heartbeat_at,
             "last_sync_at": self.last_sync_at,
-            "last_error": self.last_error,
+            "heartbeat_error": self.heartbeat_error,
+            "workers_error": self.workers_error,
+            "last_error": self.heartbeat_error or self.workers_error or self.last_error,
         }
 
     def _heartbeat_loop(self) -> None:
@@ -2888,6 +2929,14 @@ def health():
 @app.get("/cluster-status")
 def cluster_status():
     return jsonify(cluster_store.status())
+
+@app.route("/cluster-heartbeat", methods=["GET", "POST"])
+def cluster_heartbeat():
+    ok = cluster_store.heartbeat()
+    status = cluster_store.status()
+    status["heartbeat_requested"] = True
+    status["heartbeat_ok"] = ok and bool(status.get("heartbeat_ok"))
+    return jsonify(status), (200 if status["heartbeat_ok"] else 503)
 
 @app.get("/cluster-workers")
 def cluster_workers():
