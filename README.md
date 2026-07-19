@@ -1,85 +1,72 @@
-# CineDrive v11.2 Multi-Bot Cluster
+# CineDrive v11.3 Global Sync
 
-Versi ini meneruskan CineDrive v11.1 dan menambahkan kelanjutan serial lintas bot Telegram melalui Supabase.
+Versi ini membuat data serial pada beberapa Railway menggunakan satu sumber utama di Supabase. File JSON di volume Railway tetap dipakai sebagai cache dan sebagai sumber migrasi data lama, bukan sebagai sumber data yang berdiri sendiri.
 
-## Cara kerja multi-bot
+## Fitur v11.3
 
-Semua Railway memakai `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `CLUSTER_NAMESPACE`, `CHANNEL_ID`, dan topic tujuan yang sama. Setiap Railway boleh memakai `BOT_TOKEN` yang berbeda. Ketika bot kedua menambah episode, aplikasi membaca daftar episode yang dibuat bot pertama dari Supabase, menambahkan episode baru, membuat katalog terbaru, lalu menghapus katalog lama.
+- Menu **Serial → Tambah Episode** membaca data global dari Supabase.
+- Data lama dari volume setiap Railway digabung otomatis ke penyimpanan global.
+- Serial duplikat dinormalisasi berdasarkan `TMDB ID + season`.
+- Episode dari bot/Railway berbeda digabung, sehingga episode berikutnya sama pada semua panel.
+- Topic dan hasil scan Telegram ikut disinkronkan.
+- Sinkronisasi otomatis setiap 15 detik.
+- Cache `/data/telegram-series.json` diperbarui dari Supabase sebagai fallback.
+- Multi-bot dan heartbeat cluster v11.2 tetap tersedia.
 
-Data setiap episode menyimpan worker dan identitas bot pengunggah. Katalog serial juga menyimpan identitas bot yang terakhir memperbaruinya.
-
-## Konfigurasi yang disarankan: satu bot per Railway
-
-Railway pertama:
-
-```env
-BOT_TOKEN=TOKEN_BOT_PERTAMA
-CLUSTER_WORKER_ID=railway-1
-```
-
-Railway kedua:
-
-```env
-BOT_TOKEN=TOKEN_BOT_KEDUA
-CLUSTER_WORKER_ID=railway-2
-```
-
-Variabel berikut harus sama pada semua Railway:
+## Variabel yang wajib sama di semua Railway
 
 ```env
 SUPABASE_URL=https://PROJECT_ID.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=SERVICE_ROLE_KEY
 CLUSTER_NAMESPACE=cinemaxx1-production
-CHANNEL_ID=-1001234567890
+CHANNEL_ID=-100xxxxxxxxxx
+GLOBAL_SYNC_ENABLED=1
+GLOBAL_SYNC_BOOTSTRAP_LOCAL=1
+GLOBAL_SYNC_INTERVAL=15
 ```
 
-## Beberapa bot dalam satu Railway
-
-Opsional, masukkan token dipisahkan koma:
+Variabel yang harus berbeda:
 
 ```env
-BOT_TOKENS=TOKEN_BOT_1,TOKEN_BOT_2,TOKEN_BOT_3
-BOT_TOKEN_INDEX=1
+# Railway pertama
+CLUSTER_WORKER_ID=railway-1
+BOT_TOKEN=TOKEN_BOT_1
+
+# Railway kedua
+CLUSTER_WORKER_ID=railway-2
+BOT_TOKEN=TOKEN_BOT_2
 ```
 
-`BOT_TOKEN_INDEX` dimulai dari 1. Jika tidak diisi, token dipilih stabil berdasarkan `CLUSTER_WORKER_ID`.
+Semua bot harus menjadi admin pada channel/supergroup yang sama dan memiliki izin mengirim serta menghapus pesan.
 
-## Izin Telegram yang wajib
+## Deploy dan migrasi
 
-Semua bot harus menjadi administrator di channel atau supergroup yang sama dan mempunyai izin:
+1. Jalankan `supabase_setup.sql` sekali di Supabase SQL Editor.
+2. Deploy ZIP yang sama pada seluruh Railway.
+3. Pastikan `CLUSTER_NAMESPACE` sama persis, termasuk huruf besar/kecil dan tanda hubung.
+4. Tunggu 30–60 detik. Masing-masing Railway akan mengimpor cache serial lamanya ke Supabase dan menggabungkan episode.
+5. Muat ulang kedua panel.
 
-- Post Messages
-- Edit Messages
-- Delete Messages
+Endpoint pemeriksaan:
 
-Saat menghapus katalog lama, v11.2 dapat mencoba bot aktif lalu token lain yang tersedia dalam `BOT_TOKENS`.
+```text
+/global-sync-status
+/cluster-status
+/bot-status
+```
 
-## Format serial
+Nilai `series_fingerprint` pada `/global-sync-status` harus sama di seluruh domain. Jika sama, menu serial memakai data yang identik.
 
-- Video episode dikirim sebagai posting tersendiri.
-- Poster, detail TMDB, dan tombol episode dibuat sebagai satu katalog.
-- Maksimal lima tombol episode per baris.
-- Ketika episode baru masuk, katalog terbaru dibuat dahulu, kemudian katalog lama dihapus.
-- Daftar episode disinkronkan melalui Supabase agar dapat diteruskan bot lain.
+## Setelah migrasi stabil
 
-## Format film
+Setelah kedua panel sudah sama, ubah pada semua Railway:
 
-1. Poster TMDB beserta detail lengkap.
-2. Video film tepat di bawahnya.
+```env
+GLOBAL_SYNC_BOOTSTRAP_LOCAL=0
+```
 
-## Endpoint pemeriksaan
+Ini mencegah data lokal lama yang tidak diperlukan ikut diimpor lagi. Supabase tetap menjadi sumber utama dan file lokal hanya menjadi cache.
 
-- `/health`
-- `/bot-status`
-- `/cluster-status`
-- `/cluster-heartbeat`
+## Catatan antrean
 
-`/bot-status` menampilkan jumlah bot yang dikonfigurasi dan bot aktif pada worker tersebut.
-
-## Deploy
-
-1. Upload semua file ke root repository GitHub.
-2. Jalankan `supabase_setup.sql` jika tabel belum tersedia.
-3. Atur Variables Railway.
-4. Pastikan semua bot telah menjadi admin pada target Telegram.
-5. Redeploy.
+v11.3 menyinkronkan data serial, episode, topic, dan hasil scan. Proses encode yang sudah berjalan tetap dijalankan oleh Railway tempat antrean dibuat. Jangan mengirim episode yang sama secara bersamaan dari dua panel.

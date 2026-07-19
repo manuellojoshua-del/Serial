@@ -105,7 +105,7 @@ EPISODE_BUTTONS_PER_ROW = max(
 )
 
 
-CLUSTER_VERSION = "11.2.0"
+CLUSTER_VERSION = "11.3.0"
 
 
 def _deep_merge_cluster(remote: Any, local: Any) -> Any:
@@ -116,6 +116,99 @@ def _deep_merge_cluster(remote: Any, local: Any) -> Any:
             merged[key] = _deep_merge_cluster(merged.get(key), value) if key in merged else value
         return merged
     return local
+
+
+GLOBAL_SYNC_ENABLED = os.getenv("GLOBAL_SYNC_ENABLED", "1").strip().lower() in {"1", "true", "yes", "on"}
+GLOBAL_SYNC_BOOTSTRAP_LOCAL = os.getenv("GLOBAL_SYNC_BOOTSTRAP_LOCAL", "1").strip().lower() in {"1", "true", "yes", "on"}
+GLOBAL_SYNC_INTERVAL = max(5, int(os.getenv("GLOBAL_SYNC_INTERVAL", "15") or "15"))
+
+
+def _json_fingerprint(value: Any) -> str:
+    try:
+        raw = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    except Exception:
+        raw = repr(value)
+    return hashlib.sha256(raw.encode("utf-8", errors="replace")).hexdigest()
+
+
+def _series_identity(key: str, item: dict[str, Any]) -> str:
+    """Identitas global serial, tidak bergantung Railway, bot, chat, atau topic."""
+    tmdb_id = int(item.get("tmdb_id") or 0)
+    season = int(item.get("season_number") or 1)
+    if tmdb_id > 0:
+        return f"tmdb:{tmdb_id}:season:{season}"
+    title = str(item.get("series_title") or item.get("title") or key).strip().lower()
+    title = re.sub(r"[^a-z0-9]+", "-", title).strip("-") or str(key)
+    return f"manual:{title}:season:{season}"
+
+
+def _record_score(item: dict[str, Any]) -> tuple[int, int, int]:
+    episodes = item.get("episodes") if isinstance(item.get("episodes"), dict) else {}
+    updated = int(item.get("updated_at") or 0)
+    index_id = int(item.get("index_message_id") or 0)
+    return (len(episodes), updated, index_id)
+
+
+def _merge_series_record(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
+    """Gabungkan duplikat serial dari beberapa volume/Railway secara deterministik."""
+    left = dict(left or {})
+    right = dict(right or {})
+    newer, older = (right, left) if _record_score(right) >= _record_score(left) else (left, right)
+    merged = dict(older)
+    for key, value in newer.items():
+        if value not in (None, "", [], {}):
+            merged[key] = value
+    episodes: dict[str, Any] = {}
+    for source in (left.get("episodes"), right.get("episodes")):
+        if not isinstance(source, dict):
+            continue
+        for ep_key, ep_value in source.items():
+            old = episodes.get(str(ep_key))
+            if not isinstance(old, dict) or not isinstance(ep_value, dict):
+                episodes[str(ep_key)] = ep_value
+                continue
+            old_ts = int(old.get("updated_at") or 0)
+            new_ts = int(ep_value.get("updated_at") or 0)
+            episodes[str(ep_key)] = ep_value if new_ts >= old_ts else old
+    merged["episodes"] = episodes
+    merged["updated_at"] = max(int(left.get("updated_at") or 0), int(right.get("updated_at") or 0)) or int(time.time())
+    merged["global_sync_version"] = CLUSTER_VERSION
+    return merged
+
+
+def _normalize_series_store(*stores: Any) -> dict[str, Any]:
+    normalized: dict[str, Any] = {}
+    for store in stores:
+        if not isinstance(store, dict):
+            continue
+        for raw_key, raw_item in store.items():
+            if not isinstance(raw_item, dict):
+                continue
+            identity = _series_identity(str(raw_key), raw_item)
+            if identity in normalized:
+                normalized[identity] = _merge_series_record(normalized[identity], raw_item)
+            else:
+                normalized[identity] = _merge_series_record({}, raw_item)
+    return normalized
+
+
+def _merge_list_records(*lists: Any) -> list[dict[str, Any]]:
+    indexed: dict[str, dict[str, Any]] = {}
+    for values in lists:
+        if not isinstance(values, list):
+            continue
+        for item in values:
+            if not isinstance(item, dict):
+                continue
+            identity = str(item.get("chat_id") or "") + ":" + str(item.get("thread_id") or item.get("update_id") or item.get("id") or "")
+            if identity == ":":
+                identity = _json_fingerprint(item)
+            previous = indexed.get(identity)
+            prev_ts = int((previous or {}).get("last_seen_at") or (previous or {}).get("date") or 0)
+            new_ts = int(item.get("last_seen_at") or item.get("date") or 0)
+            if previous is None or new_ts >= prev_ts:
+                indexed[identity] = item
+    return list(indexed.values())
 
 
 class ClusterStore:
@@ -592,13 +685,25 @@ def load_discovered_topics() -> list[dict[str, Any]]:
                 local = data
     except Exception:
         pass
-    remote = cluster_store.get_document("topics", local)
-    return remote if isinstance(remote, list) else local
+    if not (GLOBAL_SYNC_ENABLED and cluster_store.enabled):
+        return local
+    remote = cluster_store.get_document("topics", [])
+    merged = _merge_list_records(remote, local if GLOBAL_SYNC_BOOTSTRAP_LOCAL else [])
+    if _json_fingerprint(merged) != _json_fingerprint(remote):
+        merged = cluster_store.save_document("topics", merged, merge=False)
+    try:
+        atomic_json_write(TOPIC_STORE_PATH, merged)
+    except Exception:
+        pass
+    return merged
+
 
 def save_discovered_topics(topics: list[dict[str, Any]]) -> None:
-    topics = cluster_store.save_document("topics", topics, merge=True)
-    TOPIC_STORE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    TOPIC_STORE_PATH.write_text(json.dumps(topics, ensure_ascii=False, indent=2), encoding="utf-8")
+    remote = cluster_store.get_document("topics", []) if GLOBAL_SYNC_ENABLED else []
+    topics = _merge_list_records(remote, topics)
+    if GLOBAL_SYNC_ENABLED:
+        topics = cluster_store.save_document("topics", topics, merge=False)
+    atomic_json_write(TOPIC_STORE_PATH, topics)
 
 def get_topic_options() -> list[dict[str, Any]]:
     merged: dict[tuple[str, int], dict[str, Any]] = {}
@@ -619,19 +724,34 @@ def get_topic_options() -> list[dict[str, Any]]:
 
 series_store_lock = threading.Lock()
 
+def _read_local_series_store() -> dict[str, Any]:
+    try:
+        if SERIES_STORE_PATH.exists():
+            data = json.loads(SERIES_STORE_PATH.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else {}
+    except Exception:
+        pass
+    return {}
+
+
 def load_series_store() -> dict[str, Any]:
+    """Supabase adalah sumber utama; volume lokal hanya cache/bootstrap migrasi."""
     with series_store_lock:
-        local: dict[str, Any] = {}
+        local = _read_local_series_store()
+        if not (GLOBAL_SYNC_ENABLED and cluster_store.enabled):
+            return _normalize_series_store(local)
+        remote = cluster_store.get_document("series", {})
+        merged = _normalize_series_store(remote, local if GLOBAL_SYNC_BOOTSTRAP_LOCAL else {})
+        if _json_fingerprint(merged) != _json_fingerprint(remote):
+            merged = cluster_store.save_document("series", merged, merge=False)
         try:
-            if SERIES_STORE_PATH.exists():
-                data = json.loads(SERIES_STORE_PATH.read_text(encoding="utf-8"))
-                if isinstance(data, dict):
-                    local = data
+            temp_path = SERIES_STORE_PATH.with_suffix(".tmp")
+            temp_path.parent.mkdir(parents=True, exist_ok=True)
+            temp_path.write_text(json.dumps(merged, ensure_ascii=False, indent=2), encoding="utf-8")
+            temp_path.replace(SERIES_STORE_PATH)
         except Exception:
             pass
-        remote = cluster_store.get_document("series", local)
-        merged = _deep_merge_cluster(local, remote) if isinstance(remote, dict) else local
-        return merged if isinstance(merged, dict) else {}
+        return merged
 
 def backup_series_store(data: dict[str, Any], reason: str = "auto") -> Path:
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
@@ -647,18 +767,20 @@ def backup_series_store(data: dict[str, Any], reason: str = "auto") -> Path:
 def save_series_store(data: dict[str, Any], reason: str = "update") -> None:
     with series_store_lock:
         SERIES_STORE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        if SERIES_STORE_PATH.exists():
+        previous = _read_local_series_store()
+        if previous:
             try:
-                previous = json.loads(SERIES_STORE_PATH.read_text(encoding="utf-8"))
-                if isinstance(previous, dict):
-                    backup_series_store(previous, reason=f"before-{reason}")
+                backup_series_store(previous, reason=f"before-{reason}")
             except Exception:
                 pass
-        data = cluster_store.save_document("series", data, merge=True)
+        remote = cluster_store.get_document("series", {}) if GLOBAL_SYNC_ENABLED else {}
+        merged = _normalize_series_store(remote, data)
+        if GLOBAL_SYNC_ENABLED:
+            merged = cluster_store.save_document("series", merged, merge=False)
         temp_path = SERIES_STORE_PATH.with_suffix(".tmp")
-        temp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        temp_path.write_text(json.dumps(merged, ensure_ascii=False, indent=2), encoding="utf-8")
         temp_path.replace(SERIES_STORE_PATH)
-        backup_series_store(data, reason=reason)
+        backup_series_store(merged, reason=reason)
 
 def storage_status() -> dict[str, Any]:
     persistent = str(SERIES_STORE_PATH).startswith("/data/")
@@ -952,7 +1074,7 @@ PANEL_HTML = r"""
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>CineDrive Studio v11.2 Multi-Bot Cluster</title>
+<title>CineDrive Studio v11.3 Multi-Bot Cluster</title>
 
 <style>
 :root{
@@ -1066,7 +1188,7 @@ button:active{transform:translateY(0) scale(.995)}
 </nav>
 <div class="wrap">
   <div class="card page-section" id="homeSection">
-    <h1>🎬 CineDrive Studio v11.2 Multi-Bot Cluster</h1>
+    <h1>🎬 CineDrive Studio v11.3 Multi-Bot Cluster</h1>
     <p class="muted">Pilih menu di navigasi untuk mencari film, mengelola serial, atau melihat antrean tanpa perlu menggulir halaman panjang.</p>
     <div class="batch-help"><strong>Status penyimpanan:</strong> {% if storage.persistent %}<span class="SUCCESS">Permanen</span>{% else %}<span class="ERROR">Sementara</span>{% endif %}<br><span class="muted">Serial: {{ storage.series_path }}<br>Topic: {{ storage.topic_path }}<br>Backup: {{ storage.backup_dir }}</span>{% if storage.warning %}<p class="error">{{ storage.warning }}</p>{% endif %}</div>
   </div>
@@ -1726,15 +1848,25 @@ def load_scan_results() -> list[dict[str, Any]]:
                 local = data
     except Exception:
         pass
-    remote = cluster_store.get_document("scan_results", local)
-    return remote if isinstance(remote, list) else local
+    if not (GLOBAL_SYNC_ENABLED and cluster_store.enabled):
+        return local
+    remote = cluster_store.get_document("scan_results", [])
+    merged = _merge_list_records(remote, local if GLOBAL_SYNC_BOOTSTRAP_LOCAL else [])
+    if _json_fingerprint(merged) != _json_fingerprint(remote):
+        merged = cluster_store.save_document("scan_results", merged, merge=False)
+    try:
+        atomic_json_write(SCAN_STORE_PATH, merged)
+    except Exception:
+        pass
+    return merged
+
 
 def save_scan_results(items: list[dict[str, Any]]) -> None:
-    items = cluster_store.save_document("scan_results", items, merge=True)
-    SCAN_STORE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = SCAN_STORE_PATH.with_suffix(".tmp")
-    temp_path.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
-    temp_path.replace(SCAN_STORE_PATH)
+    remote = cluster_store.get_document("scan_results", []) if GLOBAL_SYNC_ENABLED else []
+    items = _merge_list_records(remote, items)
+    if GLOBAL_SYNC_ENABLED:
+        items = cluster_store.save_document("scan_results", items, merge=False)
+    atomic_json_write(SCAN_STORE_PATH, items)
 
 def _telegram_message_from_update(update: dict[str, Any]) -> dict[str, Any] | None:
     return (
@@ -3066,6 +3198,44 @@ def bot_status():
 def health():
     return jsonify({"success": True, "status": "ok", "version": CLUSTER_VERSION, "cluster_enabled": cluster_store.enabled, "active_bot": get_bot_identity(ACTIVE_BOT_TOKEN), "configured_bot_count": len(BOT_TOKENS)})
 
+@app.get("/global-sync-status")
+def global_sync_status():
+    series = load_series_store()
+    topics = load_discovered_topics()
+    scans = load_scan_results()
+    episode_count = sum(len(item.get("episodes") or {}) for item in series.values() if isinstance(item, dict))
+    return jsonify({
+        "success": True,
+        "version": CLUSTER_VERSION,
+        "global_sync_enabled": GLOBAL_SYNC_ENABLED and cluster_store.enabled,
+        "namespace": cluster_store.namespace,
+        "worker_id": cluster_store.worker_id,
+        "series_count": len(series),
+        "episode_count": episode_count,
+        "topic_count": len(topics),
+        "scan_count": len(scans),
+        "series_fingerprint": _json_fingerprint(series),
+        "last_error": cluster_store.last_error,
+    })
+
+
+@app.post("/global-sync")
+def global_sync_now():
+    series = load_series_store()
+    topics = load_discovered_topics()
+    scans = load_scan_results()
+    return jsonify({
+        "success": True,
+        "version": CLUSTER_VERSION,
+        "namespace": cluster_store.namespace,
+        "worker_id": cluster_store.worker_id,
+        "series_count": len(series),
+        "topic_count": len(topics),
+        "scan_count": len(scans),
+        "fingerprint": _json_fingerprint(series),
+    })
+
+
 @app.get("/cluster-status")
 def cluster_status():
     return jsonify(cluster_store.status())
@@ -3860,6 +4030,29 @@ def api_jobs():
     if not authorized():
         return jsonify({"success": False, "error": "Unauthorized"}), 401
     return jsonify({"success": True, "jobs": get_jobs_snapshot()})
+
+
+def _global_sync_loop() -> None:
+    # Menyatukan cache lama dari setiap Railway, lalu menjaga cache lokal mengikuti Supabase.
+    time.sleep(2)
+    while True:
+        try:
+            if GLOBAL_SYNC_ENABLED and cluster_store.enabled:
+                load_series_store()
+                load_discovered_topics()
+                load_scan_results()
+                print(
+                    f"[GLOBAL-SYNC] OK worker={cluster_store.worker_id} namespace={cluster_store.namespace}",
+                    flush=True,
+                )
+        except Exception as exc:
+            print(f"[GLOBAL-SYNC] ERROR: {exc}", flush=True)
+        time.sleep(GLOBAL_SYNC_INTERVAL)
+
+
+if GLOBAL_SYNC_ENABLED and cluster_store.enabled:
+    threading.Thread(target=_global_sync_loop, name="global-sync", daemon=True).start()
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "8080")))
