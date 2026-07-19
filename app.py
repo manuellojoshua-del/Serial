@@ -105,7 +105,7 @@ EPISODE_BUTTONS_PER_ROW = max(
 )
 
 
-CLUSTER_VERSION = "11.4.0"
+CLUSTER_VERSION = "11.5.0"
 
 
 def _deep_merge_cluster(remote: Any, local: Any) -> Any:
@@ -125,6 +125,10 @@ GLOBAL_DATABASE_SOURCE_PREFIX = "series-source:"
 GLOBAL_DATABASE_CANONICAL_KEY = "series"
 GLOBAL_DATABASE_PUBLISH_LOCAL = os.getenv("GLOBAL_DATABASE_PUBLISH_LOCAL", "1").strip().lower() in {"1", "true", "yes", "on"}
 GLOBAL_DATABASE_REFRESH_SECONDS = max(3, int(os.getenv("GLOBAL_DATABASE_REFRESH_SECONDS", "10") or "10"))
+ENTERPRISE_CLUSTER_ENABLED = os.getenv("ENTERPRISE_CLUSTER_ENABLED", "1").strip().lower() in {"1", "true", "yes", "on"}
+ENTERPRISE_LOCK_TTL_SECONDS = max(300, int(os.getenv("ENTERPRISE_LOCK_TTL_SECONDS", "21600") or "21600"))
+ENTERPRISE_JOB_RETENTION_SECONDS = max(3600, int(os.getenv("ENTERPRISE_JOB_RETENTION_SECONDS", "86400") or "86400"))
+ENTERPRISE_QUEUE_PREFIX = "enterprise-job:"
 _global_source_published = False
 _global_source_lock = threading.Lock()
 
@@ -532,6 +536,111 @@ class ClusterStore:
             self.heartbeat()
             time.sleep(30)
 
+
+def _cluster_lock_row(self: ClusterStore, lock_key: str) -> dict[str, Any] | None:
+    if not self.enabled:
+        return None
+    response = requests.get(
+        self._endpoint("cinedrive_cluster"), headers=self._headers(),
+        params={
+            "namespace": f"eq.{self.namespace}", "record_type": "eq.lock",
+            "record_key": f"eq.{lock_key}", "select": "item_key,value,data,updated_at,updated_by", "limit": "1",
+        }, timeout=20,
+    )
+    response.raise_for_status()
+    rows = response.json()
+    return rows[0] if rows else None
+
+
+def _cluster_release_lock(self: ClusterStore, lock_key: str) -> bool:
+    if not self.enabled:
+        return True
+    try:
+        response = requests.delete(
+            self._endpoint("cinedrive_cluster"), headers=self._headers("return=minimal"),
+            params={
+                "namespace": f"eq.{self.namespace}", "record_type": "eq.lock",
+                "record_key": f"eq.{lock_key}", "updated_by": f"eq.{self.worker_id}",
+            }, timeout=20,
+        )
+        response.raise_for_status()
+        return True
+    except Exception as exc:
+        self.last_error = f"release lock {lock_key}: {exc}"
+        return False
+
+
+def _cluster_acquire_lock(self: ClusterStore, lock_key: str, metadata: dict[str, Any] | None = None) -> tuple[bool, dict[str, Any]]:
+    """Acquire a cross-Railway lock using a unique Supabase identity row."""
+    if not (self.enabled and ENTERPRISE_CLUSTER_ENABLED):
+        return True, {"owner": self.worker_id, "mode": "local"}
+    now = time.time()
+    existing = None
+    try:
+        existing = self._lock_row(lock_key)
+        if existing:
+            raw = existing.get("value", existing.get("data")) or {}
+            stamp = str(existing.get("updated_at") or raw.get("acquired_at") or "")
+            try:
+                age = now - time.mktime(time.strptime(stamp[:19], "%Y-%m-%dT%H:%M:%S"))
+            except Exception:
+                age = 0
+            owner = str(raw.get("worker_id") or existing.get("updated_by") or "")
+            if age <= ENTERPRISE_LOCK_TTL_SECONDS and owner and owner != self.worker_id:
+                return False, {"owner": owner, "age_seconds": int(age), "lock_key": lock_key}
+            # stale lock or lock already owned by this worker
+            requests.delete(
+                self._endpoint("cinedrive_cluster"), headers=self._headers("return=minimal"),
+                params={"namespace": f"eq.{self.namespace}", "record_type": "eq.lock", "record_key": f"eq.{lock_key}"},
+                timeout=20,
+            )
+        acquired_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        value = {"worker_id": self.worker_id, "hostname": self.hostname, "acquired_at": acquired_at, "metadata": metadata or {}}
+        payload = {
+            "namespace": self.namespace, "bucket": "locks", "item_key": lock_key, "value": value,
+            "worker_id": self.worker_id, "record_type": "lock", "record_key": lock_key,
+            "data": value, "updated_by": self.worker_id, "updated_at": acquired_at,
+        }
+        response = requests.post(
+            self._endpoint("cinedrive_cluster"), headers=self._headers("return=representation"), json=payload, timeout=20,
+        )
+        if response.status_code == 409:
+            row = self._lock_row(lock_key) or {}
+            raw = row.get("value", row.get("data")) or {}
+            return False, {"owner": raw.get("worker_id") or row.get("updated_by") or "worker lain", "lock_key": lock_key}
+        response.raise_for_status()
+        return True, value
+    except Exception as exc:
+        self.last_error = f"acquire lock {lock_key}: {exc}"
+        return False, {"owner": "unknown", "error": str(exc), "lock_key": lock_key}
+
+
+def _cluster_publish_enterprise_job(self: ClusterStore, job: dict[str, Any]) -> None:
+    if not (self.enabled and ENTERPRISE_CLUSTER_ENABLED):
+        return
+    public = {
+        "id": job.get("id"), "title": job.get("title"), "state": job.get("state"),
+        "overall_progress": job.get("overall_progress", 0), "message": job.get("message", ""),
+        "error": job.get("error"), "tmdb_id": job.get("tmdb_id"),
+        "season_number": job.get("season_number"), "episode_number": job.get("episode_number"),
+        "target_chat_id": job.get("target_chat_id"), "message_thread_id": job.get("message_thread_id"),
+        "created_at": job.get("created_at"), "started_at": job.get("started_at"), "finished_at": job.get("finished_at"),
+        "worker_id": self.worker_id, "bot": get_bot_identity(ACTIVE_BOT_TOKEN) if "ACTIVE_BOT_TOKEN" in globals() else {},
+    }
+    self.save_document(f"{ENTERPRISE_QUEUE_PREFIX}{job.get('id')}", public, merge=False)
+
+
+def _cluster_enterprise_jobs(self: ClusterStore) -> list[dict[str, Any]]:
+    docs = self.list_documents(ENTERPRISE_QUEUE_PREFIX) if self.enabled else {}
+    rows = [dict(v) for v in docs.values() if isinstance(v, dict)]
+    rows.sort(key=lambda x: str(x.get("created_at") or ""), reverse=True)
+    return rows[:200]
+
+ClusterStore._lock_row = _cluster_lock_row
+ClusterStore.acquire_lock = _cluster_acquire_lock
+ClusterStore.release_lock = _cluster_release_lock
+ClusterStore.publish_enterprise_job = _cluster_publish_enterprise_job
+ClusterStore.enterprise_jobs = _cluster_enterprise_jobs
 
 cluster_store = ClusterStore()
 
@@ -2985,6 +3094,24 @@ def upload_video(job_id: str, video_path: Path, thumb_path: Path, caption: str, 
 def process_job(job_id: str) -> None:
     with queue_lock:
         data = dict(jobs[job_id])
+    identity_parts = [
+        str(data.get("target_chat_id") or CHANNEL_ID), str(data.get("message_thread_id") or 0),
+        str(data.get("tmdb_id") or data.get("file_id") or data.get("title") or job_id),
+        str(data.get("season_number") or 0), str(data.get("episode_number") or 0),
+    ]
+    enterprise_lock_key = "media:" + hashlib.sha256("|".join(identity_parts).encode("utf-8")).hexdigest()[:32]
+    lock_ok, lock_info = cluster_store.acquire_lock(enterprise_lock_key, {
+        "job_id": job_id, "title": data.get("title"), "episode_number": data.get("episode_number"),
+    })
+    if not lock_ok:
+        owner = str(lock_info.get("owner") or "worker lain")
+        set_job(job_id, state="ERROR", message=f"Dibatalkan: konten sedang diproses oleh {owner}.",
+                error=f"Distributed lock aktif pada {owner}", finished_at=now_ts(), progress_detail="Mencegah encode/upload ganda.")
+        with queue_lock:
+            snapshot = dict(jobs.get(job_id) or data)
+        cluster_store.publish_enterprise_job(snapshot)
+        shutil.rmtree(Path(data["work_dir"]), ignore_errors=True)
+        return
     work_dir = Path(data["work_dir"])
     input_path = work_dir / "input.mp4"
     output_path = work_dir / "output.mp4"
@@ -3112,6 +3239,10 @@ def process_job(job_id: str) -> None:
     except Exception as exc:
         set_job(job_id, state="ERROR", message="Proses gagal.", error=str(exc), finished_at=now_ts(), progress_detail="Proses berhenti karena error.")
     finally:
+        with queue_lock:
+            snapshot = dict(jobs.get(job_id) or data)
+        cluster_store.publish_enterprise_job(snapshot)
+        cluster_store.release_lock(enterprise_lock_key)
         shutil.rmtree(work_dir, ignore_errors=True)
 
 def queue_worker() -> None:
@@ -3329,6 +3460,29 @@ def global_database_converge():
         "legacy_source_count": len(cluster_store.list_documents(GLOBAL_DATABASE_SOURCE_PREFIX)),
     })
 
+
+@app.get("/enterprise-status")
+def enterprise_status():
+    local_jobs = get_jobs_snapshot()
+    shared_jobs = cluster_store.enterprise_jobs()
+    workers = cluster_store.workers() if cluster_store.enabled else []
+    active_states = {"QUEUED", "DOWNLOADING", "PROCESSING", "UPLOADING"}
+    return jsonify({
+        "success": True,
+        "version": CLUSTER_VERSION,
+        "enterprise_cluster_enabled": ENTERPRISE_CLUSTER_ENABLED and cluster_store.enabled,
+        "namespace": cluster_store.namespace,
+        "worker_id": cluster_store.worker_id,
+        "configured_bot_count": len(BOT_TOKENS),
+        "active_bot": get_bot_identity(ACTIVE_BOT_TOKEN),
+        "worker_count": len(workers),
+        "local_job_count": len(local_jobs),
+        "shared_job_count": len(shared_jobs),
+        "active_shared_jobs": [j for j in shared_jobs if str(j.get("state")) in active_states],
+        "recent_shared_jobs": shared_jobs[:25],
+        "lock_ttl_seconds": ENTERPRISE_LOCK_TTL_SECONDS,
+        "last_error": cluster_store.last_error,
+    })
 
 @app.get("/cluster-status")
 def cluster_status():
@@ -4077,6 +4231,7 @@ def enqueue():
         }
         pending_jobs.append(job_id)
         queue_condition.notify()
+        cluster_store.publish_enterprise_job(dict(jobs[job_id]))
 
     return redirect(url_for("panel", key=request.args.get("key", "")))
 

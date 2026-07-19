@@ -71,3 +71,8 @@ alter table public.cinedrive_cluster enable row level security;
 -- Aplikasi wajib menggunakan SUPABASE_SERVICE_ROLE_KEY, bukan anon key.
 
 notify pgrst, 'reload schema';
+
+-- CineDrive v11.5 uses record_type='lock' and document keys prefixed enterprise-job:.
+-- Existing cinedrive_cluster schema and identity index are sufficient.
+create index if not exists cinedrive_cluster_bucket_item_idx
+on public.cinedrive_cluster(namespace, bucket, item_key);
