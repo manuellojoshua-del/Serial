@@ -25,7 +25,24 @@ from flask import Flask, jsonify, redirect, render_template_string, request, url
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024
 
-BOT_TOKEN = os.environ["BOT_TOKEN"]
+BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
+BOT_TOKENS_RAW = os.getenv("BOT_TOKENS", "").strip()
+
+def _parse_bot_tokens() -> list[str]:
+    raw = BOT_TOKENS_RAW.replace("\n", ",").replace(";", ",")
+    tokens = [item.strip() for item in raw.split(",") if item.strip()]
+    if BOT_TOKEN:
+        tokens.insert(0, BOT_TOKEN)
+    unique: list[str] = []
+    for token in tokens:
+        if token not in unique:
+            unique.append(token)
+    if not unique:
+        raise RuntimeError("BOT_TOKEN atau BOT_TOKENS belum diisi.")
+    return unique
+
+BOT_TOKENS = _parse_bot_tokens()
+BOT_TOKEN_INDEX_RAW = os.getenv("BOT_TOKEN_INDEX", "").strip()
 CHANNEL_ID = os.environ["CHANNEL_ID"]
 SECRET_KEY = os.environ["SECRET_KEY"]
 TMDB_API_KEY = os.environ["TMDB_API_KEY"]
@@ -88,7 +105,7 @@ EPISODE_BUTTONS_PER_ROW = max(
 )
 
 
-CLUSTER_VERSION = "11.0.3-final.1"
+CLUSTER_VERSION = "11.2.0"
 
 
 def _deep_merge_cluster(remote: Any, local: Any) -> Any:
@@ -384,6 +401,45 @@ class ClusterStore:
 
 cluster_store = ClusterStore()
 
+def _select_active_bot_token() -> tuple[str, int]:
+    if BOT_TOKEN_INDEX_RAW:
+        try:
+            index = max(0, int(BOT_TOKEN_INDEX_RAW) - 1) % len(BOT_TOKENS)
+            return BOT_TOKENS[index], index
+        except ValueError:
+            pass
+    # Distribusikan worker secara stabil ke token yang tersedia.
+    digest = hashlib.sha256(cluster_store.worker_id.encode("utf-8")).digest()
+    index = int.from_bytes(digest[:4], "big") % len(BOT_TOKENS)
+    return BOT_TOKENS[index], index
+
+ACTIVE_BOT_TOKEN, ACTIVE_BOT_INDEX = _select_active_bot_token()
+_bot_identity_lock = threading.Lock()
+_bot_identity_cache: dict[str, dict[str, Any]] = {}
+
+def telegram_api_url(token: str, method: str) -> str:
+    return f"{TELEGRAM_API_BASE}/bot{token}/{method}"
+
+def get_bot_identity(token: str = ACTIVE_BOT_TOKEN) -> dict[str, Any]:
+    with _bot_identity_lock:
+        cached = _bot_identity_cache.get(token)
+        if cached:
+            return dict(cached)
+    identity: dict[str, Any] = {"id": 0, "username": "", "first_name": "", "token_index": BOT_TOKENS.index(token) + 1}
+    try:
+        response = requests.get(telegram_api_url(token, "getMe"), timeout=30)
+        result = response.json()
+        if response.ok and result.get("ok") and isinstance(result.get("result"), dict):
+            identity.update(result["result"])
+    except Exception as exc:
+        identity["error"] = str(exc)
+    with _bot_identity_lock:
+        _bot_identity_cache[token] = dict(identity)
+    return identity
+
+ACTIVE_BOT = get_bot_identity()
+print(f"[TELEGRAM] active bot index={ACTIVE_BOT_INDEX + 1}/{len(BOT_TOKENS)} username=@{ACTIVE_BOT.get('username') or '-'} worker={cluster_store.worker_id}", flush=True)
+
 
 
 def extract_drive_folder_id(value: str) -> str:
@@ -645,26 +701,29 @@ def series_store_key(data: dict[str, Any]) -> str:
 def build_episode_keyboard(
     episodes: dict[str, Any],
 ) -> list[list[dict[str, str]]]:
-    buttons: list[dict[str, str]] = []
+    """Susun tombol episode seperti katalog Telegram, maksimal 5 per baris.
 
-    for episode_key in sorted(
-        episodes,
-        key=lambda value: int(value),
-    ):
-        episode = episodes[episode_key]
-        buttons.append({
-            "text": f"E.{int(episode_key):02d}",
-            "url": str(episode["url"]),
-        })
-
-    return [
-        buttons[index:index + EPISODE_BUTTONS_PER_ROW]
-        for index in range(0, len(buttons), EPISODE_BUTTONS_PER_ROW)
-    ]
+    Tombol pertama pada setiap baris diberi ikon panah agar tampilannya mendekati
+    contoh katalog episode, tetapi seluruh tombol tetap dapat diketuk langsung.
+    """
+    ordered = sorted(episodes, key=lambda value: int(value))
+    rows: list[list[dict[str, str]]] = []
+    for start in range(0, len(ordered), EPISODE_BUTTONS_PER_ROW):
+        row: list[dict[str, str]] = []
+        for offset, episode_key in enumerate(ordered[start:start + EPISODE_BUTTONS_PER_ROW]):
+            episode = episodes[episode_key]
+            prefix = "➡️ " if offset == 0 else ""
+            row.append({
+                "text": f"{prefix}E.{int(episode_key):02d}",
+                "url": str(episode["url"]),
+            })
+        rows.append(row)
+    return rows
 
 def build_series_index_caption(
     series: dict[str, Any],
 ) -> str:
+    """Caption poster serial dengan detail TMDB dan katalog episode terbaru."""
     title = str(series.get("series_title") or "Serial")
     original_title = str(series.get("original_title") or title)
     year = str(series.get("year") or "-")
@@ -675,24 +734,22 @@ def build_series_index_caption(
     vote_count = int(series.get("vote_count") or 0)
     release_date = str(series.get("release_date") or "-")
     certification = str(series.get("certification") or "-")
-
     genres = ", ".join(series.get("genres") or []) or "-"
     countries = ", ".join(series.get("countries") or []) or "-"
     languages = ", ".join(series.get("languages") or []) or "-"
     directors = ", ".join(series.get("directors") or []) or "-"
     writers = ", ".join(series.get("writers") or []) or "-"
     cast = ", ".join(series.get("cast") or []) or "-"
-    overview = str(
-        series.get("overview") or "Sinopsis belum tersedia."
-    )
+    overview = str(series.get("overview") or "Sinopsis belum tersedia.")
 
+    rating_text = "-" if rating in (None, "") else str(rating)
     lines = [
         f"🎬 {title} ({year})",
         f"📢 AKA: {original_title}",
         "",
         f"📺 Season {season}",
         f"🎞 Episode tersedia: {count}",
-        f"⭐ Rating: {rating} dari {vote_count} pengguna",
+        f"⭐ Rating: {rating_text} dari {vote_count} pengguna",
         f"🔞 Kategori: {certification}",
         f"📅 Rilis: {release_date}",
         f"🎭 Genre: {genres}",
@@ -710,43 +767,49 @@ def build_series_index_caption(
     ]
 
     caption = "\n".join(lines)
-
     if len(caption) > 1024:
-        fixed_lines = lines[:15] + ["", "💬 Sinopsis:"]
-        fixed = "\n".join(fixed_lines) + "\n"
+        # Telegram membatasi caption foto hingga 1024 karakter. Pangkas hanya
+        # sinopsis, sehingga detail utama dan petunjuk tombol tetap terlihat.
+        marker = "\n💬 Sinopsis:\n"
         ending = "\n\n👇 Tap episode untuk menonton."
-        remaining = max(0, 1024 - len(fixed) - len(ending))
-        short_overview = overview[:remaining].rstrip()
-        if len(short_overview) < len(overview):
-            short_overview = short_overview.rstrip(" .") + "…"
-        caption = fixed + short_overview + ending
-
+        prefix = "\n".join(lines[:16]) + marker
+        remaining = max(0, 1024 - len(prefix) - len(ending))
+        shortened = overview[:remaining].rstrip()
+        if len(shortened) < len(overview):
+            shortened = shortened.rstrip(" .") + "…"
+        caption = prefix + shortened + ending
     return caption[:1024]
 
 
 def telegram_post(
     method: str,
     payload: dict[str, Any],
+    token: str | None = None,
+    try_all_bots: bool = False,
 ) -> dict[str, Any]:
-    response = requests.post(
-        f"{TELEGRAM_API_BASE}/bot{BOT_TOKEN}/{method}",
-        data=payload,
-        timeout=180,
-    )
-    try:
-        result = response.json()
-    except ValueError as exc:
-        raise RuntimeError(
-            f"Telegram {method} merespons bukan JSON."
-        ) from exc
-
-    if not response.ok or not result.get("ok"):
-        raise RuntimeError(
-            f"Telegram {method} gagal: "
-            f"{result.get('description') or response.text[-800:]}"
-        )
-
-    return result
+    preferred = token or ACTIVE_BOT_TOKEN
+    tokens = [preferred]
+    if try_all_bots:
+        tokens.extend(item for item in BOT_TOKENS if item != preferred)
+    errors: list[str] = []
+    for candidate in tokens:
+        try:
+            response = requests.post(
+                telegram_api_url(candidate, method),
+                data=payload,
+                timeout=180,
+            )
+            try:
+                result = response.json()
+            except ValueError as exc:
+                raise RuntimeError(f"Telegram {method} merespons bukan JSON.") from exc
+            if response.ok and result.get("ok"):
+                result["_bot"] = get_bot_identity(candidate)
+                return result
+            errors.append(str(result.get("description") or response.text[-800:]))
+        except Exception as exc:
+            errors.append(str(exc))
+    raise RuntimeError(f"Telegram {method} gagal: {' | '.join(errors[-3:])}")
 
 def create_or_update_series_index(
     data: dict[str, Any],
@@ -803,6 +866,9 @@ def create_or_update_series_index(
         "release_date": metadata.get("release_date"),
         "vote_average": metadata.get("vote_average"),
         "updated_at": now_ts(),
+        "uploaded_by_worker": cluster_store.worker_id,
+        "uploaded_by_bot_id": int(ACTIVE_BOT.get("id") or 0),
+        "uploaded_by_bot_username": str(ACTIVE_BOT.get("username") or ""),
     }
 
     # Selalu segarkan metadata seri dari TMDB/metadata episode terbaru.
@@ -850,6 +916,8 @@ def create_or_update_series_index(
 
     new_index_id = int(result["result"]["message_id"])
     series["index_message_id"] = new_index_id
+    series["index_bot_id"] = int((result.get("_bot") or {}).get("id") or ACTIVE_BOT.get("id") or 0)
+    series["index_bot_username"] = str((result.get("_bot") or {}).get("username") or ACTIVE_BOT.get("username") or "")
     series["previous_index_message_id"] = previous_index_id
 
     # Hapus posting indeks lama hanya setelah posting baru berhasil dibuat.
@@ -858,6 +926,7 @@ def create_or_update_series_index(
             telegram_post(
                 "deleteMessage",
                 {"chat_id": target_chat_id, "message_id": str(previous_index_id)},
+                try_all_bots=True,
             )
             series["previous_index_deleted"] = True
             series.pop("delete_warning", None)
@@ -883,7 +952,7 @@ PANEL_HTML = r"""
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>CineDrive Studio v10.6.2.2 Turbo · Smart Watermark Safe Area</title>
+<title>CineDrive Studio v11.2 Multi-Bot Cluster</title>
 
 <style>
 :root{
@@ -997,7 +1066,7 @@ button:active{transform:translateY(0) scale(.995)}
 </nav>
 <div class="wrap">
   <div class="card page-section" id="homeSection">
-    <h1>🎬 CineDrive Studio v10.6.2.2 Turbo · Smart Watermark Safe Area</h1>
+    <h1>🎬 CineDrive Studio v11.2 Multi-Bot Cluster</h1>
     <p class="muted">Pilih menu di navigasi untuk mencari film, mengelola serial, atau melihat antrean tanpa perlu menggulir halaman panjang.</p>
     <div class="batch-help"><strong>Status penyimpanan:</strong> {% if storage.persistent %}<span class="SUCCESS">Permanen</span>{% else %}<span class="ERROR">Sementara</span>{% endif %}<br><span class="muted">Serial: {{ storage.series_path }}<br>Topic: {{ storage.topic_path }}<br>Backup: {{ storage.backup_dir }}</span>{% if storage.warning %}<p class="error">{{ storage.warning }}</p>{% endif %}</div>
   </div>
@@ -1536,7 +1605,7 @@ def topic_name_from_id(thread_id: int, chat_id: str | int | None = None) -> str:
 
 def telegram_method(method: str, *, params: dict[str, Any] | None = None) -> dict[str, Any]:
     response = requests.get(
-        f"{TELEGRAM_API_BASE}/bot{BOT_TOKEN}/{method}",
+        telegram_api_url(ACTIVE_BOT_TOKEN, method),
         params=params or {},
         timeout=60,
     )
@@ -2653,7 +2722,7 @@ def send_poster(meta: dict[str, Any], caption: str, target_chat_id: str, message
     if message_thread_id > 0:
         payload["message_thread_id"] = str(message_thread_id)
     response = requests.post(
-        f"{TELEGRAM_API_BASE}/bot{BOT_TOKEN}/sendPhoto",
+        telegram_api_url(ACTIVE_BOT_TOKEN, "sendPhoto"),
         data=payload,
         timeout=120,
     )
@@ -2690,7 +2759,7 @@ def upload_video(job_id: str, video_path: Path, thumb_path: Path, caption: str, 
             update_progress(job_id, "UPLOADING", pct, detail=f"{human_size(uploaded)} / {human_size(total)} · {human_size(int(speed))}/s", eta_seconds=eta, message="Mengunggah video ke Telegram.", uploaded_bytes=uploaded, upload_total_bytes=total)
         monitor = MultipartEncoderMonitor(encoder, callback)
         response = requests.post(
-            f"{TELEGRAM_API_BASE}/bot{BOT_TOKEN}/sendVideo",
+            telegram_api_url(ACTIVE_BOT_TOKEN, "sendVideo"),
             data=monitor,
             headers={"Content-Type": monitor.content_type},
             timeout=(30, 7200),
@@ -2969,9 +3038,33 @@ def home():
         },
     )
 
+@app.get("/bot-status")
+def bot_status():
+    bots = []
+    for index, token in enumerate(BOT_TOKENS, start=1):
+        identity = get_bot_identity(token)
+        bots.append({
+            "index": index,
+            "active": token == ACTIVE_BOT_TOKEN,
+            "id": identity.get("id", 0),
+            "username": identity.get("username", ""),
+            "first_name": identity.get("first_name", ""),
+            "error": identity.get("error", ""),
+        })
+    return jsonify({
+        "success": True,
+        "version": CLUSTER_VERSION,
+        "worker_id": cluster_store.worker_id,
+        "configured_bot_count": len(BOT_TOKENS),
+        "active_bot_index": ACTIVE_BOT_INDEX + 1,
+        "active_bot": get_bot_identity(ACTIVE_BOT_TOKEN),
+        "bots": bots,
+    })
+
+
 @app.get("/health")
 def health():
-    return jsonify({"success": True, "status": "ok", "version": CLUSTER_VERSION, "cluster_enabled": cluster_store.enabled})
+    return jsonify({"success": True, "status": "ok", "version": CLUSTER_VERSION, "cluster_enabled": cluster_store.enabled, "active_bot": get_bot_identity(ACTIVE_BOT_TOKEN), "configured_bot_count": len(BOT_TOKENS)})
 
 @app.get("/cluster-status")
 def cluster_status():

@@ -1,51 +1,85 @@
-# CineDrive v11.0.3 Cluster Final (Conflict Fix)
+# CineDrive v11.2 Multi-Bot Cluster
 
-Versi ini memperbaiki heartbeat Supabase untuk struktur tabel `cinedrive_cluster` yang memiliki kolom lama dan baru sekaligus.
+Versi ini meneruskan CineDrive v11.1 dan menambahkan kelanjutan serial lintas bot Telegram melalui Supabase.
 
-## Perbaikan utama
+## Cara kerja multi-bot
 
-- Heartbeat mengisi semua kolom wajib: `namespace`, `bucket`, `item_key`, `value`, `updated_at`, `record_type`, `record_key`, dan `data`.
-- UPSERT memakai identitas `namespace,bucket,item_key`.
-- Worker disimpan dengan `bucket=workers` dan `item_key=CLUSTER_WORKER_ID`.
-- Dokumen sinkron disimpan dengan `bucket=documents`.
-- Heartbeat otomatis dijalankan saat startup dan setiap 30 detik.
-- Endpoint `/cluster-heartbeat` dan `/cluster-status` tetap tersedia.
+Semua Railway memakai `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `CLUSTER_NAMESPACE`, `CHANNEL_ID`, dan topic tujuan yang sama. Setiap Railway boleh memakai `BOT_TOKEN` yang berbeda. Ketika bot kedua menambah episode, aplikasi membaca daftar episode yang dibuat bot pertama dari Supabase, menambahkan episode baru, membuat katalog terbaru, lalu menghapus katalog lama.
 
-## Pemasangan
+Data setiap episode menyimpan worker dan identitas bot pengunggah. Katalog serial juga menyimpan identitas bot yang terakhir memperbaruinya.
 
-1. Upload semua file ZIP ini ke root repository GitHub.
-2. Di Supabase buka **SQL Editor** dan jalankan seluruh isi `supabase_setup.sql`.
-3. Pastikan Railway Variables berisi:
+## Konfigurasi yang disarankan: satu bot per Railway
+
+Railway pertama:
 
 ```env
-SUPABASE_URL=https://PROJECT_ID.supabase.co
-SUPABASE_SERVICE_ROLE_KEY=ISI_SERVICE_ROLE_KEY
-CLUSTER_NAMESPACE=cinemaxx1-production
+BOT_TOKEN=TOKEN_BOT_PERTAMA
 CLUSTER_WORKER_ID=railway-1
 ```
 
-4. Redeploy Railway.
-5. Periksa Deploy Logs. Hasil normal:
-
-```text
-[CLUSTER] heartbeat OK worker=railway-1 namespace=cinemaxx1-production
-```
-
-6. Buka:
-
-```text
-https://domain-anda/cluster-heartbeat
-https://domain-anda/cluster-status
-```
-
-Status normal menampilkan `version: 11.0.3`, `heartbeat_ok: true`, dan `active_worker_count: 1`.
-
-Untuk Railway kedua gunakan Supabase dan namespace yang sama, tetapi ubah:
+Railway kedua:
 
 ```env
+BOT_TOKEN=TOKEN_BOT_KEDUA
 CLUSTER_WORKER_ID=railway-2
 ```
 
+Variabel berikut harus sama pada semua Railway:
 
-## Conflict Fix
-Heartbeat dan dokumen sekarang melakukan PATCH berdasarkan `(namespace, record_type, record_key)` terlebih dahulu, lalu INSERT hanya jika data belum ada. Ini memperbaiki HTTP 409 pada tabel lama yang memiliki dua unique index.
+```env
+SUPABASE_URL=https://PROJECT_ID.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=SERVICE_ROLE_KEY
+CLUSTER_NAMESPACE=cinemaxx1-production
+CHANNEL_ID=-1001234567890
+```
+
+## Beberapa bot dalam satu Railway
+
+Opsional, masukkan token dipisahkan koma:
+
+```env
+BOT_TOKENS=TOKEN_BOT_1,TOKEN_BOT_2,TOKEN_BOT_3
+BOT_TOKEN_INDEX=1
+```
+
+`BOT_TOKEN_INDEX` dimulai dari 1. Jika tidak diisi, token dipilih stabil berdasarkan `CLUSTER_WORKER_ID`.
+
+## Izin Telegram yang wajib
+
+Semua bot harus menjadi administrator di channel atau supergroup yang sama dan mempunyai izin:
+
+- Post Messages
+- Edit Messages
+- Delete Messages
+
+Saat menghapus katalog lama, v11.2 dapat mencoba bot aktif lalu token lain yang tersedia dalam `BOT_TOKENS`.
+
+## Format serial
+
+- Video episode dikirim sebagai posting tersendiri.
+- Poster, detail TMDB, dan tombol episode dibuat sebagai satu katalog.
+- Maksimal lima tombol episode per baris.
+- Ketika episode baru masuk, katalog terbaru dibuat dahulu, kemudian katalog lama dihapus.
+- Daftar episode disinkronkan melalui Supabase agar dapat diteruskan bot lain.
+
+## Format film
+
+1. Poster TMDB beserta detail lengkap.
+2. Video film tepat di bawahnya.
+
+## Endpoint pemeriksaan
+
+- `/health`
+- `/bot-status`
+- `/cluster-status`
+- `/cluster-heartbeat`
+
+`/bot-status` menampilkan jumlah bot yang dikonfigurasi dan bot aktif pada worker tersebut.
+
+## Deploy
+
+1. Upload semua file ke root repository GitHub.
+2. Jalankan `supabase_setup.sql` jika tabel belum tersedia.
+3. Atur Variables Railway.
+4. Pastikan semua bot telah menjadi admin pada target Telegram.
+5. Redeploy.
