@@ -1,72 +1,70 @@
-# CineDrive v11.3 Global Sync
+# CineDrive v11.4 Global Database
 
-Versi ini membuat data serial pada beberapa Railway menggunakan satu sumber utama di Supabase. File JSON di volume Railway tetap dipakai sebagai cache dan sebagai sumber migrasi data lama, bukan sebagai sumber data yang berdiri sendiri.
+Versi ini menjadikan satu dokumen kanonis di Supabase sebagai sumber utama data serial. File `/data/telegram-series.json` hanya cache lokal dan cadangan saat Supabase tidak tersedia.
 
-## Fitur v11.3
+## Perubahan utama
 
-- Menu **Serial → Tambah Episode** membaca data global dari Supabase.
-- Data lama dari volume setiap Railway digabung otomatis ke penyimpanan global.
-- Serial duplikat dinormalisasi berdasarkan `TMDB ID + season`.
-- Episode dari bot/Railway berbeda digabung, sehingga episode berikutnya sama pada semua panel.
-- Topic dan hasil scan Telegram ikut disinkronkan.
-- Sinkronisasi otomatis setiap 15 detik.
-- Cache `/data/telegram-series.json` diperbarui dari Supabase sebagai fallback.
-- Multi-bot dan heartbeat cluster v11.2 tetap tersedia.
+- Kedua Railway membaca data serial dari dokumen Supabase `series` yang sama.
+- Data lama setiap volume dipublikasikan sebagai snapshot migrasi `series-source:<worker_id>`.
+- Snapshot semua Railway digabung secara deterministik ke database kanonis.
+- Menu **Serial → Tambah Episode** pada semua domain memakai data yang sama.
+- Episode baru dari bot/Railway mana pun ditulis kembali ke database kanonis.
+- Endpoint `/global-sync-status` menampilkan `database_mode`, fingerprint, dan jumlah sumber migrasi.
+- Endpoint POST `/global-database-converge?key=SECRET_KEY` memaksa penggabungan saat diperlukan.
 
-## Variabel yang wajib sama di semua Railway
+## Variabel yang sama di semua Railway
 
 ```env
-SUPABASE_URL=https://PROJECT_ID.supabase.co
-SUPABASE_SERVICE_ROLE_KEY=SERVICE_ROLE_KEY
+SUPABASE_URL=https://PROJECT.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=...
 CLUSTER_NAMESPACE=cinemaxx1-production
 CHANNEL_ID=-100xxxxxxxxxx
 GLOBAL_SYNC_ENABLED=1
-GLOBAL_SYNC_BOOTSTRAP_LOCAL=1
 GLOBAL_SYNC_INTERVAL=15
+GLOBAL_SYNC_BOOTSTRAP_LOCAL=1
+GLOBAL_DATABASE_PUBLISH_LOCAL=1
+GLOBAL_DATABASE_REFRESH_SECONDS=10
 ```
 
-Variabel yang harus berbeda:
+Yang harus berbeda pada setiap Railway:
 
 ```env
-# Railway pertama
 CLUSTER_WORKER_ID=railway-1
 BOT_TOKEN=TOKEN_BOT_1
+```
 
-# Railway kedua
+Railway kedua:
+
+```env
 CLUSTER_WORKER_ID=railway-2
 BOT_TOKEN=TOKEN_BOT_2
 ```
 
-Semua bot harus menjadi admin pada channel/supergroup yang sama dan memiliki izin mengirim serta menghapus pesan.
+## Urutan deploy migrasi
 
-## Deploy dan migrasi
+1. Upload ZIP yang sama ke semua Railway.
+2. Jalankan `supabase_setup.sql` satu kali.
+3. Redeploy semua Railway.
+4. Tunggu 30–60 detik.
+5. Buka `/global-sync-status` di setiap domain.
+6. `series_fingerprint`, `series_count`, dan `episode_count` harus sama.
+7. Setelah sama, ubah `GLOBAL_SYNC_BOOTSTRAP_LOCAL=0` dan `GLOBAL_DATABASE_PUBLISH_LOCAL=0` pada semua Railway, lalu redeploy. Ini mencegah snapshot volume lama dipublikasikan lagi.
 
-1. Jalankan `supabase_setup.sql` sekali di Supabase SQL Editor.
-2. Deploy ZIP yang sama pada seluruh Railway.
-3. Pastikan `CLUSTER_NAMESPACE` sama persis, termasuk huruf besar/kecil dan tanda hubung.
-4. Tunggu 30–60 detik. Masing-masing Railway akan mengimpor cache serial lamanya ke Supabase dan menggabungkan episode.
-5. Muat ulang kedua panel.
-
-Endpoint pemeriksaan:
+## Pemeriksaan
 
 ```text
-/global-sync-status
-/cluster-status
-/bot-status
+https://domain-1/global-sync-status
+https://domain-2/global-sync-status
 ```
 
-Nilai `series_fingerprint` pada `/global-sync-status` harus sama di seluruh domain. Jika sama, menu serial memakai data yang identik.
+Hasil normal:
 
-## Setelah migrasi stabil
-
-Setelah kedua panel sudah sama, ubah pada semua Railway:
-
-```env
-GLOBAL_SYNC_BOOTSTRAP_LOCAL=0
+```json
+{
+  "success": true,
+  "version": "11.4.0",
+  "database_mode": "supabase-canonical",
+  "series_fingerprint": "nilai-yang-sama-di-semua-domain",
+  "last_error": ""
+}
 ```
-
-Ini mencegah data lokal lama yang tidak diperlukan ikut diimpor lagi. Supabase tetap menjadi sumber utama dan file lokal hanya menjadi cache.
-
-## Catatan antrean
-
-v11.3 menyinkronkan data serial, episode, topic, dan hasil scan. Proses encode yang sudah berjalan tetap dijalankan oleh Railway tempat antrean dibuat. Jangan mengirim episode yang sama secara bersamaan dari dua panel.

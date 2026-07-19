@@ -105,7 +105,7 @@ EPISODE_BUTTONS_PER_ROW = max(
 )
 
 
-CLUSTER_VERSION = "11.3.0"
+CLUSTER_VERSION = "11.4.0"
 
 
 def _deep_merge_cluster(remote: Any, local: Any) -> Any:
@@ -121,6 +121,12 @@ def _deep_merge_cluster(remote: Any, local: Any) -> Any:
 GLOBAL_SYNC_ENABLED = os.getenv("GLOBAL_SYNC_ENABLED", "1").strip().lower() in {"1", "true", "yes", "on"}
 GLOBAL_SYNC_BOOTSTRAP_LOCAL = os.getenv("GLOBAL_SYNC_BOOTSTRAP_LOCAL", "1").strip().lower() in {"1", "true", "yes", "on"}
 GLOBAL_SYNC_INTERVAL = max(5, int(os.getenv("GLOBAL_SYNC_INTERVAL", "15") or "15"))
+GLOBAL_DATABASE_SOURCE_PREFIX = "series-source:"
+GLOBAL_DATABASE_CANONICAL_KEY = "series"
+GLOBAL_DATABASE_PUBLISH_LOCAL = os.getenv("GLOBAL_DATABASE_PUBLISH_LOCAL", "1").strip().lower() in {"1", "true", "yes", "on"}
+GLOBAL_DATABASE_REFRESH_SECONDS = max(3, int(os.getenv("GLOBAL_DATABASE_REFRESH_SECONDS", "10") or "10"))
+_global_source_published = False
+_global_source_lock = threading.Lock()
 
 
 def _json_fingerprint(value: Any) -> str:
@@ -326,6 +332,41 @@ class ClusterStore:
         except Exception as exc:
             self.last_error = f"get {document_key}: {exc}"
         return default
+
+    def list_documents(self, prefix: str = "") -> dict[str, Any]:
+        """Return all document records whose item_key starts with prefix."""
+        if not self.enabled:
+            return {}
+        try:
+            params = {
+                "namespace": f"eq.{self.namespace}",
+                "bucket": "eq.documents",
+                "select": "item_key,value,data,updated_at,updated_by",
+                "order": "updated_at.asc",
+            }
+            if prefix:
+                params["item_key"] = f"like.{prefix}*"
+            response = requests.get(
+                self._endpoint("cinedrive_cluster"),
+                headers=self._headers(),
+                params=params,
+                timeout=25,
+            )
+            response.raise_for_status()
+            result: dict[str, Any] = {}
+            for row in response.json():
+                if not isinstance(row, dict):
+                    continue
+                key = str(row.get("item_key") or "")
+                value = row.get("value", row.get("data"))
+                if key:
+                    result[key] = value
+            self.last_error = ""
+            self.last_sync_at = int(time.time())
+            return result
+        except Exception as exc:
+            self.last_error = f"list documents {prefix}: {exc}"
+            return {}
 
     def save_document(self, document_key: str, data: Any, merge: bool = True) -> Any:
         if not self.enabled:
@@ -734,16 +775,45 @@ def _read_local_series_store() -> dict[str, Any]:
     return {}
 
 
+def _publish_local_series_source_once(local: dict[str, Any]) -> None:
+    """Publish this Railway's legacy volume once, without making it authoritative."""
+    global _global_source_published
+    if not (GLOBAL_DATABASE_PUBLISH_LOCAL and GLOBAL_SYNC_BOOTSTRAP_LOCAL and cluster_store.enabled):
+        return
+    with _global_source_lock:
+        if _global_source_published:
+            return
+        normalized = _normalize_series_store(local)
+        if normalized:
+            source_key = f"{GLOBAL_DATABASE_SOURCE_PREFIX}{cluster_store.worker_id}"
+            cluster_store.save_document(source_key, normalized, merge=False)
+            print(f"[GLOBAL-DB] published legacy source worker={cluster_store.worker_id} series={len(normalized)}", flush=True)
+        _global_source_published = True
+
+
+def _read_global_series_database(local: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Read the canonical Supabase database and converge legacy worker snapshots into it."""
+    local = local or {}
+    _publish_local_series_source_once(local)
+    canonical = cluster_store.get_document(GLOBAL_DATABASE_CANONICAL_KEY, {})
+    sources = cluster_store.list_documents(GLOBAL_DATABASE_SOURCE_PREFIX)
+    merged = _normalize_series_store(canonical, *sources.values())
+    if not merged and local and not cluster_store.enabled:
+        merged = _normalize_series_store(local)
+    if cluster_store.enabled and _json_fingerprint(merged) != _json_fingerprint(_normalize_series_store(canonical)):
+        cluster_store.save_document(GLOBAL_DATABASE_CANONICAL_KEY, merged, merge=False)
+        # Read-after-write makes every panel calculate its fingerprint from the same row.
+        canonical = cluster_store.get_document(GLOBAL_DATABASE_CANONICAL_KEY, merged)
+        merged = _normalize_series_store(canonical)
+    return merged
+
 def load_series_store() -> dict[str, Any]:
-    """Supabase adalah sumber utama; volume lokal hanya cache/bootstrap migrasi."""
+    """Supabase canonical row is authoritative; /data is only an offline cache."""
     with series_store_lock:
         local = _read_local_series_store()
         if not (GLOBAL_SYNC_ENABLED and cluster_store.enabled):
             return _normalize_series_store(local)
-        remote = cluster_store.get_document("series", {})
-        merged = _normalize_series_store(remote, local if GLOBAL_SYNC_BOOTSTRAP_LOCAL else {})
-        if _json_fingerprint(merged) != _json_fingerprint(remote):
-            merged = cluster_store.save_document("series", merged, merge=False)
+        merged = _read_global_series_database(local)
         try:
             temp_path = SERIES_STORE_PATH.with_suffix(".tmp")
             temp_path.parent.mkdir(parents=True, exist_ok=True)
@@ -765,6 +835,7 @@ def backup_series_store(data: dict[str, Any], reason: str = "auto") -> Path:
     return backup_path
 
 def save_series_store(data: dict[str, Any], reason: str = "update") -> None:
+    """Atomically merge changes into the global canonical Supabase document."""
     with series_store_lock:
         SERIES_STORE_PATH.parent.mkdir(parents=True, exist_ok=True)
         previous = _read_local_series_store()
@@ -773,14 +844,17 @@ def save_series_store(data: dict[str, Any], reason: str = "update") -> None:
                 backup_series_store(previous, reason=f"before-{reason}")
             except Exception:
                 pass
-        remote = cluster_store.get_document("series", {}) if GLOBAL_SYNC_ENABLED else {}
-        merged = _normalize_series_store(remote, data)
-        if GLOBAL_SYNC_ENABLED:
-            merged = cluster_store.save_document("series", merged, merge=False)
+        normalized = _normalize_series_store(data)
+        if GLOBAL_SYNC_ENABLED and cluster_store.enabled:
+            remote = cluster_store.get_document(GLOBAL_DATABASE_CANONICAL_KEY, {})
+            sources = cluster_store.list_documents(GLOBAL_DATABASE_SOURCE_PREFIX)
+            normalized = _normalize_series_store(remote, *sources.values(), normalized)
+            normalized = cluster_store.save_document(GLOBAL_DATABASE_CANONICAL_KEY, normalized, merge=False)
+            normalized = _normalize_series_store(cluster_store.get_document(GLOBAL_DATABASE_CANONICAL_KEY, normalized))
         temp_path = SERIES_STORE_PATH.with_suffix(".tmp")
-        temp_path.write_text(json.dumps(merged, ensure_ascii=False, indent=2), encoding="utf-8")
+        temp_path.write_text(json.dumps(normalized, ensure_ascii=False, indent=2), encoding="utf-8")
         temp_path.replace(SERIES_STORE_PATH)
-        backup_series_store(merged, reason=reason)
+        backup_series_store(normalized, reason=reason)
 
 def storage_status() -> dict[str, Any]:
     persistent = str(SERIES_STORE_PATH).startswith("/data/")
@@ -3215,6 +3289,9 @@ def global_sync_status():
         "topic_count": len(topics),
         "scan_count": len(scans),
         "series_fingerprint": _json_fingerprint(series),
+        "database_mode": "supabase-canonical" if cluster_store.enabled else "local-fallback",
+        "canonical_key": GLOBAL_DATABASE_CANONICAL_KEY,
+        "legacy_source_count": len(cluster_store.list_documents(GLOBAL_DATABASE_SOURCE_PREFIX)) if cluster_store.enabled else 0,
         "last_error": cluster_store.last_error,
     })
 
@@ -3233,6 +3310,23 @@ def global_sync_now():
         "topic_count": len(topics),
         "scan_count": len(scans),
         "fingerprint": _json_fingerprint(series),
+    })
+
+
+@app.post("/global-database-converge")
+def global_database_converge():
+    if not authorized():
+        return jsonify({"success": False, "error": "Unauthorized"}), 401
+    series = _read_global_series_database(_read_local_series_store())
+    return jsonify({
+        "success": True,
+        "version": CLUSTER_VERSION,
+        "namespace": cluster_store.namespace,
+        "worker_id": cluster_store.worker_id,
+        "series_count": len(series),
+        "episode_count": sum(len(x.get("episodes") or {}) for x in series.values() if isinstance(x, dict)),
+        "series_fingerprint": _json_fingerprint(series),
+        "legacy_source_count": len(cluster_store.list_documents(GLOBAL_DATABASE_SOURCE_PREFIX)),
     })
 
 
