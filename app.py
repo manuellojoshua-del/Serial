@@ -106,7 +106,7 @@ EPISODE_BUTTONS_PER_ROW = max(
 )
 
 
-CLUSTER_VERSION = "13.1.0"
+CLUSTER_VERSION = "13.2.0"
 
 
 def _deep_merge_cluster(remote: Any, local: Any) -> Any:
@@ -1480,7 +1480,9 @@ button:active{transform:translateY(0) scale(.995)}
             <label><input type="checkbox" name="watermark_enabled" style="width:auto"> Aktifkan watermark logo</label>
             <label>Mode watermark</label><select name="watermark_mode"><option value="smart_v2" selected>Smart Watermark Safe Area — tetap di sudut pilihan</option><option value="static">Statis — tetap di satu posisi</option></select>
             <label>Kecepatan gerak halus</label><select name="watermark_speed"><option value="slow">Lambat</option><option value="normal" selected>Normal</option><option value="fast">Cepat</option></select>
-            <label>File logo PNG/WEBP/JPG/GIF</label><input type="file" name="watermark_file" accept=".png,.webp,.jpg,.jpeg,.gif">
+            <label>Sumber logo</label><select name="watermark_source"><option value="gdrive" selected>Google Drive — dapat diproses semua Railway</option><option value="upload">Upload dari perangkat — hanya worker lokal</option></select>
+            <label>Link logo Google Drive / File ID</label><input name="watermark_drive_input" placeholder="https://drive.google.com/file/d/FILE_ID/view">
+            <label>File logo lokal PNG/WEBP/JPG/GIF</label><input type="file" name="watermark_file" accept=".png,.webp,.jpg,.jpeg,.gif">
             <label>Posisi logo</label><select name="watermark_position"><option value="top_right">Kanan atas</option><option value="top_left">Kiri atas</option><option value="bottom_right">Kanan bawah</option><option value="bottom_left">Kiri bawah</option></select>
             <label>Ukuran logo</label><select name="watermark_size"><option value="5">Kecil (5%)</option><option value="8" selected>Sedang (8%)</option><option value="10">Besar (10%)</option><option value="15">Ekstra besar (15%)</option></select>
             <label>Transparansi logo</label><select name="watermark_opacity"><option value="20">20%</option><option value="35" selected>35%</option><option value="50">50%</option><option value="70">70%</option><option value="100">100%</option></select>
@@ -1547,7 +1549,9 @@ button:active{transform:translateY(0) scale(.995)}
             <label><input type="checkbox" name="batch_watermark_enabled" style="width:auto"> Aktifkan watermark logo</label>
             <label>Mode watermark</label><select name="batch_watermark_mode"><option value="smart_v2" selected>Smart Watermark Safe Area — tetap di sudut pilihan</option><option value="static">Statis — tetap di satu posisi</option></select>
             <label>Kecepatan gerak halus</label><select name="batch_watermark_speed"><option value="slow">Lambat</option><option value="normal" selected>Normal</option><option value="fast">Cepat</option></select>
-            <label>File logo PNG/WEBP/JPG/GIF</label><input type="file" name="batch_watermark_file" accept=".png,.webp,.jpg,.jpeg,.gif">
+            <label>Sumber logo</label><select name="batch_watermark_source"><option value="gdrive" selected>Google Drive — dapat diproses semua Railway</option><option value="upload">Upload dari perangkat — hanya worker lokal</option></select>
+            <label>Link logo Google Drive / File ID</label><input name="batch_watermark_drive_input" placeholder="https://drive.google.com/file/d/FILE_ID/view">
+            <label>File logo lokal PNG/WEBP/JPG/GIF</label><input type="file" name="batch_watermark_file" accept=".png,.webp,.jpg,.jpeg,.gif">
             <label>Posisi logo</label><select name="batch_watermark_position"><option value="top_right">Kanan atas</option><option value="top_left">Kiri atas</option><option value="bottom_right">Kanan bawah</option><option value="bottom_left">Kiri bawah</option></select>
             <label>Ukuran logo</label><select name="batch_watermark_size"><option value="5">Kecil (5%)</option><option value="8" selected>Sedang (8%)</option><option value="10">Besar (10%)</option><option value="15">Ekstra besar (15%)</option></select>
             <label>Transparansi logo</label><select name="batch_watermark_opacity"><option value="20">20%</option><option value="35" selected>35%</option><option value="50">50%</option><option value="70">70%</option><option value="100">100%</option></select>
@@ -1616,7 +1620,9 @@ button:active{transform:translateY(0) scale(.995)}
       <label><input type="checkbox" name="manual_watermark_enabled" style="width:auto"> Aktifkan watermark logo</label>
             <label>Mode watermark</label><select name="manual_watermark_mode"><option value="smart_v2" selected>Smart Watermark Safe Area — tetap di sudut pilihan</option><option value="static">Statis — tetap di satu posisi</option></select>
             <label>Kecepatan gerak halus</label><select name="manual_watermark_speed"><option value="slow">Lambat</option><option value="normal" selected>Normal</option><option value="fast">Cepat</option></select>
-      <label>File logo PNG/WEBP/JPG/GIF</label><input type="file" name="manual_watermark_file" accept=".png,.webp,.jpg,.jpeg,.gif">
+      <label>Sumber logo</label><select name="manual_watermark_source"><option value="gdrive" selected>Google Drive — dapat diproses semua Railway</option><option value="upload">Upload dari perangkat — hanya worker lokal</option></select>
+      <label>Link logo Google Drive / File ID</label><input name="manual_watermark_drive_input" placeholder="https://drive.google.com/file/d/FILE_ID/view">
+      <label>File logo lokal PNG/WEBP/JPG/GIF</label><input type="file" name="manual_watermark_file" accept=".png,.webp,.jpg,.jpeg,.gif">
       <label>Posisi logo</label><select name="manual_watermark_position"><option value="top_right">Kanan atas</option><option value="top_left">Kiri atas</option><option value="bottom_right">Kanan bawah</option><option value="bottom_left">Kiri bawah</option></select>
       <label>Ukuran logo</label><select name="manual_watermark_size"><option value="5">Kecil (5%)</option><option value="8" selected>Sedang (8%)</option><option value="10">Besar (10%)</option><option value="15">Ekstra besar (15%)</option></select>
       <label>Transparansi logo</label><select name="manual_watermark_opacity"><option value="20">20%</option><option value="35" selected>35%</option><option value="50">50%</option><option value="70">70%</option><option value="100">100%</option></select>
@@ -1707,7 +1713,9 @@ button:active{transform:translateY(0) scale(.995)}
         <label><input type="checkbox" name="saved_watermark_enabled" style="width:auto"> Aktifkan watermark logo</label>
             <label>Mode watermark</label><select name="saved_watermark_mode"><option value="smart_v2" selected>Smart Watermark Safe Area — tetap di sudut pilihan</option><option value="static">Statis — tetap di satu posisi</option></select>
             <label>Kecepatan gerak halus</label><select name="saved_watermark_speed"><option value="slow">Lambat</option><option value="normal" selected>Normal</option><option value="fast">Cepat</option></select>
-        <label>File logo PNG/WEBP/JPG/GIF</label><input type="file" name="saved_watermark_file" accept=".png,.webp,.jpg,.jpeg,.gif">
+        <label>Sumber logo</label><select name="saved_watermark_source"><option value="gdrive" selected>Google Drive — dapat diproses semua Railway</option><option value="upload">Upload dari perangkat — hanya worker lokal</option></select>
+        <label>Link logo Google Drive / File ID</label><input name="saved_watermark_drive_input" placeholder="https://drive.google.com/file/d/FILE_ID/view">
+        <label>File logo lokal PNG/WEBP/JPG/GIF</label><input type="file" name="saved_watermark_file" accept=".png,.webp,.jpg,.jpeg,.gif">
         <label>Posisi logo</label><select name="saved_watermark_position"><option value="top_right">Kanan atas</option><option value="top_left">Kiri atas</option><option value="bottom_right">Kanan bawah</option><option value="bottom_left">Kiri bawah</option></select>
         <label>Ukuran logo</label><select name="saved_watermark_size"><option value="5">Kecil (5%)</option><option value="8" selected>Sedang (8%)</option><option value="10">Besar (10%)</option><option value="15">Ekstra besar (15%)</option></select>
         <label>Transparansi logo</label><select name="saved_watermark_opacity"><option value="20">20%</option><option value="35" selected>35%</option><option value="50">50%</option><option value="70">70%</option><option value="100">100%</option></select>
@@ -2820,18 +2828,7 @@ WATERMARK_POSITIONS = {
     "bottom_left": "20:main_h-overlay_h-20",
 }
 
-def save_watermark_upload(field_name: str, work_dir: Path) -> dict[str, Any]:
-    enabled = str(request.form.get(field_name + "_enabled") or "") in {"1", "on", "true", "yes"}
-    if not enabled:
-        return {"watermark_enabled": False, "watermark_path": "", "watermark_info": "Tanpa logo"}
-
-    upload = request.files.get(field_name + "_file")
-    if not upload or not upload.filename:
-        raise ValueError("Watermark diaktifkan tetapi file logo belum dipilih.")
-    ext = Path(upload.filename).suffix.lower()
-    if ext not in WATERMARK_EXTENSIONS:
-        raise ValueError("Format logo harus PNG, WEBP, JPG, JPEG, atau GIF.")
-
+def _watermark_common_config(field_name: str) -> dict[str, Any]:
     try:
         width_pct = max(3, min(25, int(request.form.get(field_name + "_size") or "8")))
         opacity_pct = max(10, min(100, int(request.form.get(field_name + "_opacity") or "35")))
@@ -2846,18 +2843,78 @@ def save_watermark_upload(field_name: str, work_dir: Path) -> dict[str, Any]:
     speed = str(request.form.get(field_name + "_speed") or "normal")
     if speed not in {"slow", "normal", "fast"}:
         speed = "normal"
+    return {
+        "watermark_position": position, "watermark_mode": mode,
+        "watermark_speed": speed, "watermark_size": width_pct,
+        "watermark_opacity": opacity_pct,
+    }
 
+def materialize_global_watermark(job: dict[str, Any], work_dir: Path) -> dict[str, Any]:
+    """Download a portable watermark asset when the job uses Google Drive."""
+    if not job.get("watermark_enabled"):
+        return job
+    source = str(job.get("watermark_source") or "upload")
+    if source != "gdrive":
+        return job
+    file_id = str(job.get("watermark_drive_file_id") or "").strip()
+    if not file_id:
+        raise RuntimeError("File ID logo Google Drive tidak tersedia.")
+    destination = work_dir / "watermark-global.png"
+    download_drive_asset(file_id, destination)
+    if not destination.exists() or destination.stat().st_size < 32:
+        raise RuntimeError("Logo Google Drive gagal diunduh.")
+    job["watermark_path"] = str(destination)
+    job["watermark_info"] = (
+        f"Logo Google Drive · {'Smart Safe Area' if job.get('watermark_mode') == 'smart_v2' else 'Statis Safe Area'} "
+        f"· {job.get('watermark_size', 8)}% · opacity {job.get('watermark_opacity', 35)}%"
+    )
+    return job
+
+def save_watermark_upload(field_name: str, work_dir: Path) -> dict[str, Any]:
+    enabled = str(request.form.get(field_name + "_enabled") or "") in {"1", "on", "true", "yes"}
+    if not enabled:
+        return {
+            "watermark_enabled": False, "watermark_path": "",
+            "watermark_source": "none", "watermark_drive_file_id": "",
+            "watermark_info": "Tanpa logo",
+        }
+
+    common = _watermark_common_config(field_name)
+    source = str(request.form.get(field_name + "_source") or "upload").strip().lower()
+    if source not in {"upload", "gdrive"}:
+        source = "upload"
+
+    if source == "gdrive":
+        drive_input = str(request.form.get(field_name + "_drive_input") or "").strip()
+        if not drive_input:
+            raise ValueError("Watermark Google Drive dipilih tetapi link/File ID logo masih kosong.")
+        file_id = extract_drive_file_id(drive_input)
+        return {
+            "watermark_enabled": True, "watermark_path": "",
+            "watermark_source": "gdrive", "watermark_drive_file_id": file_id,
+            "watermark_info": (
+                f"Logo Google Drive · {'Smart Safe Area' if common['watermark_mode'] == 'smart_v2' else 'Statis Safe Area'} "
+                f"· {common['watermark_size']}% · opacity {common['watermark_opacity']}%"
+            ),
+            **common,
+        }
+
+    upload = request.files.get(field_name + "_file")
+    if not upload or not upload.filename:
+        raise ValueError("Watermark upload dipilih tetapi file logo belum dipilih.")
+    ext = Path(upload.filename).suffix.lower()
+    if ext not in WATERMARK_EXTENSIONS:
+        raise ValueError("Format logo harus PNG, WEBP, JPG, JPEG, atau GIF.")
     destination = work_dir / f"watermark{ext}"
     upload.save(destination)
     return {
-        "watermark_enabled": True,
-        "watermark_path": str(destination),
-        "watermark_position": position,
-        "watermark_mode": mode,
-        "watermark_speed": speed,
-        "watermark_size": width_pct,
-        "watermark_opacity": opacity_pct,
-        "watermark_info": f"Logo {upload.filename} · {'Smart Safe Area' if mode == 'smart_v2' else 'Statis Safe Area'} · {width_pct}% · opacity {opacity_pct}%",
+        "watermark_enabled": True, "watermark_path": str(destination),
+        "watermark_source": "upload", "watermark_drive_file_id": "",
+        "watermark_info": (
+            f"Logo {upload.filename} · {'Smart Safe Area' if common['watermark_mode'] == 'smart_v2' else 'Statis Safe Area'} "
+            f"· {common['watermark_size']}% · opacity {common['watermark_opacity']}%"
+        ),
+        **common,
     }
 
 def copy_watermark_config(source: dict[str, Any], work_dir: Path) -> dict[str, Any]:
@@ -3158,7 +3215,9 @@ def _scheduler_payload(job: dict[str, Any]) -> tuple[dict[str, Any], bool]:
     """Create a portable job payload. Uploaded subtitle/logo files force local execution."""
     uploaded_subtitle = str(job.get("uploaded_subtitle") or "")
     watermark_path = str(job.get("watermark_path") or "")
-    local_only = bool(uploaded_subtitle or (job.get("watermark_enabled") and watermark_path))
+    watermark_source = str(job.get("watermark_source") or "upload")
+    local_watermark = bool(job.get("watermark_enabled") and watermark_path and watermark_source != "gdrive")
+    local_only = bool(uploaded_subtitle or local_watermark)
     skip = {
         "work_dir", "uploaded_subtitle", "watermark_path", "state", "message", "error",
         "started_at", "finished_at", "downloaded_bytes", "total_bytes", "file_size_bytes",
@@ -3417,8 +3476,15 @@ def process_job(job_id: str) -> None:
         else:
             subtitle_info = "Tanpa subtitle"
 
+        data = materialize_global_watermark(data, work_dir)
+        with queue_lock:
+            if job_id in jobs:
+                jobs[job_id].update({
+                    "watermark_path": data.get("watermark_path", ""),
+                    "watermark_info": data.get("watermark_info", "Tanpa logo"),
+                })
         set_job(job_id, subtitle_info=subtitle_info)
-        update_progress(job_id, "PROCESSING", 1, message=f"Memproses video. {subtitle_info}", detail=subtitle_info)
+        update_progress(job_id, "PROCESSING", 1, message=f"Memproses video. {subtitle_info}", detail=f"{subtitle_info} · {data.get('watermark_info', 'Tanpa logo')}")
         process_video(job_id, input_path, output_path, thumb_path, subtitle_path, data)
 
         full_caption = build_caption(
