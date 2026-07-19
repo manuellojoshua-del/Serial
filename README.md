@@ -1,45 +1,64 @@
-# CineDrive v13.2 Enterprise Global Assets
+# CineDrive v14 Enterprise Smart Pipeline Scheduler
 
-Versi ini meneruskan CineDrive v13.1 Enterprise Global Queue dan menambahkan watermark logo dari Google Drive agar job dapat diproses oleh Railway mana pun.
+Versi v14 menambahkan pipeline khusus serial pada Global Queue CineDrive.
 
-## Fitur utama
+## Cara kerja serial
 
-- Pilihan sumber logo pada semua formulir: **Google Drive** atau **Upload dari perangkat**.
-- Logo Google Drive disimpan sebagai File ID di job global, bukan sebagai file lokal Railway.
-- Worker yang mengklaim job mengunduh logo ke folder sementara sebelum FFmpeg berjalan.
-- Job dengan video Google Drive + logo Google Drive + subtitle Google Drive/internal/tanpa subtitle dapat diproses worker kosong mana pun.
-- Job dengan logo atau subtitle upload dari HP tetap dikunci ke worker asal.
-- Smart Watermark Safe Area, H.265 Turbo, Supabase canonical database, multi-bot, scheduler, dashboard, dan katalog episode tetap tersedia.
+- Episode diklaim menurut urutan E01, E02, E03, dan seterusnya.
+- Setelah E01 sudah diklaim, Railway lain yang kosong dapat mulai mengunduh dan meng-encode E02.
+- Hasil encode E02 masuk status `READY` dan belum diunggah ke Telegram.
+- E02 baru diunggah setelah E01 berstatus `SUCCESS`.
+- E03 dapat dipersiapkan oleh worker lain dengan aturan yang sama.
+- Urutan posting Telegram tetap benar, tetapi waktu download/encode antar-episode dapat tumpang tindih.
 
-## Cara memakai logo Google Drive
+## Film
 
-1. Upload logo PNG/WEBP/JPG/GIF ke Google Drive.
-2. Ubah akses menjadi **Anyone with the link – Viewer**.
-3. Pada panel, centang **Aktifkan watermark logo**.
-4. Pilih **Google Drive — dapat diproses semua Railway**.
-5. Tempel link seperti `https://drive.google.com/file/d/FILE_ID/view` atau File ID saja.
-6. Tambahkan job ke antrean.
+Smart Pipeline hanya berlaku untuk episode serial (`episode_number >= 1`). Film tetap memakai scheduler global paralel dan tidak menunggu film lain.
 
-## Agar job menjadi global
+## Status pipeline
 
-Gunakan:
+Status tambahan:
 
-- Video: Google Drive.
-- Logo: Google Drive.
-- Subtitle: Google Drive, internal video, otomatis dari folder Drive, atau tanpa subtitle.
+- `PREPARING` / `PROCESSING`: sedang download atau encode.
+- `READY`: encode selesai dan menunggu episode sebelumnya berhasil.
+- `UPLOADING`: giliran upload sudah tersedia.
+- `SUCCESS`: episode telah diposting dan katalog diperbarui.
 
-Upload logo/subtitle langsung dari perangkat membuat job tetap lokal karena file hanya tersedia pada Railway penerima upload.
+Endpoint pemeriksaan:
 
-## Variabel scheduler
+```text
+/v14-status
+/scheduler-status
+/scheduler-dashboard-data?key=SECRET_KEY
+```
+
+## Variabel Railway
+
+Pasang pada semua worker:
 
 ```env
 SCHEDULER_ENABLED=1
 SCHEDULER_POLL_SECONDS=5
 SCHEDULER_MAX_JOBS_PER_WORKER=1
 ENTERPRISE_CLUSTER_ENABLED=1
+SMART_PIPELINE_SCHEDULER=1
+SMART_PIPELINE_POLL_SECONDS=5
+SMART_PIPELINE_WAIT_TIMEOUT_SECONDS=86400
 GLOBAL_SYNC_ENABLED=1
 GLOBAL_SYNC_BOOTSTRAP_LOCAL=0
 GLOBAL_DATABASE_PUBLISH_LOCAL=0
 ```
 
-Gunakan konfigurasi Supabase dan `CLUSTER_NAMESPACE` yang sama pada seluruh Railway. `CLUSTER_WORKER_ID` dan `BOT_TOKEN` harus berbeda untuk tiap worker.
+Variabel Supabase, namespace, channel, dan `CATALOG_BOT_TOKEN` harus sama. `CLUSTER_WORKER_ID` dan `BOT_TOKEN` worker harus berbeda pada setiap Railway.
+
+## Aset global
+
+Agar episode bisa dipindahkan ke worker lain, video, subtitle, dan logo harus dapat diunduh semua Railway. Gunakan Google Drive publik atau URL publik. Upload file langsung dari HP tetap menjadi job lokal.
+
+## Deploy
+
+1. Upload seluruh isi ZIP ke repository.
+2. Jalankan `supabase_setup.sql` bila belum pernah dijalankan.
+3. Pasang variabel di atas pada semua Railway.
+4. Redeploy semua service.
+5. Buka `/v14-status` dan pastikan `smart_pipeline_scheduler` bernilai `true`.

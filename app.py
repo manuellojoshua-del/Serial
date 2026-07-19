@@ -106,7 +106,7 @@ EPISODE_BUTTONS_PER_ROW = max(
 )
 
 
-CLUSTER_VERSION = "13.2.0"
+CLUSTER_VERSION = "14.0.0"
 
 
 def _deep_merge_cluster(remote: Any, local: Any) -> Any:
@@ -134,6 +134,10 @@ SCHEDULER_ENABLED = os.getenv("SCHEDULER_ENABLED", "1").strip().lower() in {"1",
 SCHEDULER_POLL_SECONDS = max(3, int(os.getenv("SCHEDULER_POLL_SECONDS", "5") or "5"))
 SCHEDULER_MAX_JOBS_PER_WORKER = max(1, int(os.getenv("SCHEDULER_MAX_JOBS_PER_WORKER", "1") or "1"))
 SCHEDULER_CLAIM_TTL_SECONDS = max(300, int(os.getenv("SCHEDULER_CLAIM_TTL_SECONDS", "21600") or "21600"))
+SERIES_SEQUENTIAL_SCHEDULER = os.getenv("SERIES_SEQUENTIAL_SCHEDULER", "1").strip().lower() in {"1", "true", "yes", "on"}
+SMART_PIPELINE_SCHEDULER = os.getenv("SMART_PIPELINE_SCHEDULER", "1").strip().lower() in {"1", "true", "yes", "on"}
+SMART_PIPELINE_POLL_SECONDS = max(2, int(os.getenv("SMART_PIPELINE_POLL_SECONDS", "5")))
+SMART_PIPELINE_WAIT_TIMEOUT_SECONDS = max(3600, int(os.getenv("SMART_PIPELINE_WAIT_TIMEOUT_SECONDS", "86400")))
 
 # CineDrive v13 Enterprise
 CATALOG_BOT_TOKEN_RAW = os.getenv("CATALOG_BOT_TOKEN", "").strip()
@@ -1326,7 +1330,7 @@ button:active{transform:translateY(0) scale(.995)}
 .result img{width:112px;aspect-ratio:2/3;object-fit:cover;border-radius:13px;box-shadow:0 12px 30px rgba(0,0,0,.42)}
 .job{border:1px solid var(--line);border-radius:16px;padding:16px;margin-top:13px;background:rgba(8,12,28,.55)}
 .row{display:grid;grid-template-columns:1fr auto;gap:12px;align-items:center}.state{font-size:12px;font-weight:900;letter-spacing:.08em;padding:6px 9px;border-radius:999px;background:rgba(255,255,255,.06)}
-.SUCCESS{color:var(--ok)}.ERROR{color:var(--err)}.DOWNLOADING,.PROCESSING,.UPLOADING,.QUEUED{color:var(--warn)}
+.SUCCESS{color:var(--ok)}.ERROR{color:var(--err)}.DOWNLOADING,.PROCESSING,.UPLOADING,.QUEUED,.PREPARING,.READY{color:var(--warn)}
 .muted{color:var(--muted);font-size:14px;line-height:1.55}.error{color:var(--err);white-space:pre-wrap;word-break:break-word}
 .progress{height:11px;border-radius:999px;background:#090c18;overflow:hidden;margin-top:12px;border:1px solid rgba(255,255,255,.04)}
 .progress>div{height:100%;background:linear-gradient(90deg,var(--accent),var(--accent2));box-shadow:0 0 15px rgba(6,182,212,.42)}
@@ -1903,7 +1907,7 @@ async function refreshJobs(){
 }
 
 const schedulerDashboardUrl={{ scheduler_dashboard_url|tojson }};
-const activeGlobalStates=new Set(["QUEUED","ASSIGNED","CLAIMED","DOWNLOADING","PROCESSING","UPLOADING"]);
+const activeGlobalStates=new Set(["QUEUED","ASSIGNED","CLAIMED","DOWNLOADING","PROCESSING","PREPARING","READY","UPLOADING"]);
 function fmtDuration(seconds){seconds=Math.max(0,Number(seconds||0));const h=Math.floor(seconds/3600),m=Math.floor((seconds%3600)/60),sec=Math.floor(seconds%60);return h?`${h}j ${m}m`:m?`${m}m ${sec}d`:`${sec}d`}
 async function refreshGlobalStatus(){
  const box=document.getElementById("globalJobs"),summary=document.getElementById("statusSummary"),updated=document.getElementById("statusUpdated");
@@ -2395,7 +2399,7 @@ def progress_values(stage: str, stage_pct: float) -> tuple[float, float]:
     stage_pct = max(0.0, min(100.0, float(stage_pct)))
     mapping = {
         "QUEUED": (0.0, 0.0), "DOWNLOADING": (0.0, 25.0),
-        "PROCESSING": (25.0, 80.0), "UPLOADING": (80.0, 99.0),
+        "PROCESSING": (25.0, 78.0), "PREPARING": (25.0, 78.0), "READY": (78.0, 80.0), "UPLOADING": (80.0, 99.0),
         "SUCCESS": (100.0, 100.0), "ERROR": (0.0, 0.0),
     }
     start, end = mapping.get(stage, (0.0, 100.0))
@@ -3253,7 +3257,7 @@ def _scheduler_choose_worker() -> str:
     counts = {wid: 0 for wid in workers}
     try:
         for item in cluster_store.enterprise_jobs():
-            if str(item.get("state")) not in {"QUEUED", "DOWNLOADING", "PROCESSING", "UPLOADING"}:
+            if str(item.get("state")) not in {"QUEUED", "DOWNLOADING", "PROCESSING", "PREPARING", "READY", "UPLOADING"}:
                 continue
             assigned = str(item.get("assigned_worker") or item.get("worker_id") or "")
             if assigned in counts:
@@ -3265,7 +3269,7 @@ def _scheduler_choose_worker() -> str:
 
 def _scheduler_local_active_count() -> int:
     """Return jobs already claimed/running on this Railway worker."""
-    active = {"CLAIMED", "DOWNLOADING", "PROCESSING", "UPLOADING"}
+    active = {"CLAIMED", "DOWNLOADING", "PROCESSING", "PREPARING", "READY", "UPLOADING"}
     with queue_lock:
         return sum(
             1 for item in jobs.values()
@@ -3315,20 +3319,90 @@ def _scheduler_submit_locked(job_id: str) -> None:
     pending_jobs.append(job_id)
 
 
+def _scheduler_series_identity(job: dict[str, Any]) -> str:
+    """Stable identity used to serialize episodes from the same series/season/topic."""
+    episode = int(job.get("episode_number") or 0)
+    if episode < 1:
+        return ""
+    title = str(
+        job.get("tmdb_id")
+        or job.get("saved_series_key")
+        or (job.get("scheduler_payload") or {}).get("saved_series_key")
+        or job.get("title")
+        or "series"
+    ).strip().lower()
+    # Remove the trailing SxxExx / Episode suffix when a title is used as fallback.
+    title = re.sub(r"\bs\d{1,3}e\d{1,4}\b.*$", "", title, flags=re.I).strip()
+    return "|".join([
+        str(job.get("target_chat_id") or CHANNEL_ID),
+        str(job.get("message_thread_id") or 0),
+        title,
+        str(int(job.get("season_number") or 1)),
+    ])
+
+
+def _scheduler_created_value(job: dict[str, Any]) -> float:
+    raw = job.get("created_at") or 0
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _scheduler_series_ready(candidate: dict[str, Any], rows: list[dict[str, Any]]) -> bool:
+    """Dispatch serial episodes in order while allowing pipeline preparation.
+
+    With Smart Pipeline enabled, E02 may be claimed after E01 has already been
+    claimed by another worker. E02 can download/encode in parallel, but upload
+    remains blocked until E01 reaches SUCCESS. Films are never serialized.
+    """
+    identity = _scheduler_series_identity(candidate)
+    if not identity:
+        return True
+    if not (SERIES_SEQUENTIAL_SCHEDULER or SMART_PIPELINE_SCHEDULER):
+        return True
+    candidate_id = str(candidate.get("id") or "")
+    candidate_episode = int(candidate.get("episode_number") or 0)
+    for other in rows:
+        if str(other.get("id") or "") == candidate_id:
+            continue
+        if _scheduler_series_identity(other) != identity:
+            continue
+        other_episode = int(other.get("episode_number") or 0)
+        if not (other_episode > 0 and other_episode < candidate_episode):
+            continue
+        state = str(other.get("state") or "")
+        status = str(other.get("scheduler_status") or "")
+        if SMART_PIPELINE_SCHEDULER:
+            # Lower episodes must at least be claimed/dispatched first. Once they
+            # are active or READY, another idle Railway may prepare the next one.
+            if state == "QUEUED" and status not in {"CLAIMED", "PINNED_LOCAL", "LOCAL"}:
+                return False
+        else:
+            running = state in {"DOWNLOADING", "PROCESSING", "PREPARING", "READY", "UPLOADING"} or (state == "QUEUED" and status == "CLAIMED")
+            if running or state == "QUEUED":
+                return False
+    return True
+
 def _scheduler_claim_remote_jobs() -> None:
     if not (SCHEDULER_ENABLED and ENTERPRISE_CLUSTER_ENABLED and cluster_store.enabled):
         return
     if _scheduler_local_active_count() >= SCHEDULER_MAX_JOBS_PER_WORKER:
         return
 
-    for remote in reversed(cluster_store.enterprise_jobs()):
+    rows = cluster_store.enterprise_jobs()
+    candidates = [row for row in rows if str(row.get("state") or "") == "QUEUED"]
+    candidates.sort(key=lambda row: (
+        _scheduler_created_value(row),
+        int(row.get("season_number") or 0),
+        int(row.get("episode_number") or 0),
+        str(row.get("id") or ""),
+    ))
+
+    for remote in candidates:
         if _scheduler_local_active_count() >= SCHEDULER_MAX_JOBS_PER_WORKER:
             break
-        if str(remote.get("state") or "") != "QUEUED":
-            continue
         assigned = str(remote.get("assigned_worker") or "").strip()
-        # Empty means globally available. Keep compatibility with older jobs that
-        # were explicitly assigned to this worker.
         if assigned and assigned != cluster_store.worker_id:
             continue
         if bool(remote.get("scheduler_local_only")) and assigned != cluster_store.worker_id:
@@ -3337,44 +3411,68 @@ def _scheduler_claim_remote_jobs() -> None:
         payload = remote.get("scheduler_payload")
         if not job_id or not isinstance(payload, dict):
             continue
-
-        claimed, _ = cluster_store.acquire_lock(f"scheduler-claim:{job_id}", {
-            "job_id": job_id, "assigned_worker": cluster_store.worker_id,
-        })
-        if not claimed:
+        if not _scheduler_series_ready(remote, rows):
             continue
 
-        # Publish ownership immediately, before touching the local queue. This is
-        # the visible atomic transition from UNASSIGNED to CLAIMED.
-        claimed_remote = dict(remote)
-        claimed_remote.update({
-            "assigned_worker": cluster_store.worker_id,
-            "worker_id": cluster_store.worker_id,
-            "scheduler_status": "CLAIMED",
-            "message": f"Diambil oleh worker kosong {cluster_store.worker_id}.",
-            "claimed_at": now_ts(),
-        })
-        cluster_store.publish_enterprise_job(claimed_remote)
+        series_identity = _scheduler_series_identity(remote)
+        series_lock_key = "scheduler-series:" + hashlib.sha256(series_identity.encode("utf-8")).hexdigest()[:32] if series_identity else ""
+        series_locked = False
+        try:
+            if series_lock_key:
+                series_locked, _ = cluster_store.acquire_lock(series_lock_key, {
+                    "job_id": job_id, "series_identity": series_identity,
+                })
+                if not series_locked:
+                    continue
+                # Re-read after obtaining the per-series dispatch mutex so a second
+                # Railway cannot claim the next episode from a stale queue snapshot.
+                fresh_rows = cluster_store.enterprise_jobs()
+                fresh = next((row for row in fresh_rows if str(row.get("id") or "") == job_id), None)
+                if not fresh or str(fresh.get("state") or "") != "QUEUED" or not _scheduler_series_ready(fresh, fresh_rows):
+                    continue
+                remote = fresh
+                payload = remote.get("scheduler_payload")
+                if not isinstance(payload, dict):
+                    continue
 
-        work_dir = Path(tempfile.mkdtemp(prefix=f"cinedrive-v13-{job_id}-"))
-        restored = dict(payload)
-        restored.update({
-            "id": job_id, "work_dir": str(work_dir), "state": "QUEUED",
-            "message": f"Diambil oleh scheduler {cluster_store.worker_id}.",
-            "error": None, "started_at": None, "finished_at": None,
-            "downloaded_bytes": 0, "total_bytes": 0, "file_size_bytes": 0,
-            "message_id": None, "stage_progress": 0.0, "overall_progress": 0.0,
-            "progress_detail": "Sudah diklaim; menunggu proses lokal.", "eta_seconds": 0, "eta_human": "-",
-            "submitted_by": remote.get("submitted_by"), "preferred_worker": remote.get("preferred_worker"),
-            "assigned_worker": cluster_store.worker_id, "worker_id": cluster_store.worker_id,
-            "scheduler_status": "CLAIMED", "scheduler_payload": payload,
-            "scheduler_local_only": False,
-        })
-        with queue_condition:
-            jobs[job_id] = restored
-            pending_jobs.append(job_id)
-            queue_condition.notify()
+            claimed, _ = cluster_store.acquire_lock(f"scheduler-claim:{job_id}", {
+                "job_id": job_id, "assigned_worker": cluster_store.worker_id,
+            })
+            if not claimed:
+                continue
 
+            claimed_remote = dict(remote)
+            claimed_remote.update({
+                "assigned_worker": cluster_store.worker_id,
+                "worker_id": cluster_store.worker_id,
+                "scheduler_status": "CLAIMED",
+                "message": f"Diambil berurutan oleh worker {cluster_store.worker_id}.",
+                "claimed_at": now_ts(),
+                "series_sequential": bool(series_identity),
+            })
+            cluster_store.publish_enterprise_job(claimed_remote)
+
+            work_dir = Path(tempfile.mkdtemp(prefix=f"cinedrive-v14-{job_id}-"))
+            restored = dict(payload)
+            restored.update({
+                "id": job_id, "work_dir": str(work_dir), "state": "QUEUED",
+                "message": f"Diambil oleh scheduler {cluster_store.worker_id}.",
+                "error": None, "started_at": None, "finished_at": None,
+                "downloaded_bytes": 0, "total_bytes": 0, "file_size_bytes": 0,
+                "message_id": None, "stage_progress": 0.0, "overall_progress": 0.0,
+                "progress_detail": "Sudah diklaim sesuai urutan episode; menunggu proses lokal.", "eta_seconds": 0, "eta_human": "-",
+                "submitted_by": remote.get("submitted_by"), "preferred_worker": remote.get("preferred_worker"),
+                "assigned_worker": cluster_store.worker_id, "worker_id": cluster_store.worker_id,
+                "scheduler_status": "CLAIMED", "scheduler_payload": payload,
+                "scheduler_local_only": False, "series_sequential": bool(series_identity),
+            })
+            with queue_condition:
+                jobs[job_id] = restored
+                pending_jobs.append(job_id)
+                queue_condition.notify()
+        finally:
+            if series_locked and series_lock_key:
+                cluster_store.release_lock(series_lock_key)
 
 def _scheduler_reassign_orphaned_queued_jobs() -> int:
     """Alihkan job QUEUED yang ditugaskan ke worker yang sudah tidak aktif.
@@ -3415,6 +3513,63 @@ def scheduler_worker() -> None:
         except Exception as exc:
             cluster_store.last_error = f"scheduler: {exc}"
         time.sleep(SCHEDULER_POLL_SECONDS)
+
+def _pipeline_shared_rows() -> list[dict[str, Any]]:
+    try:
+        return cluster_store.enterprise_jobs()
+    except Exception as exc:
+        cluster_store.last_error = f"pipeline-read: {exc}"
+        return []
+
+def _pipeline_lower_blockers(data: dict[str, Any], job_id: str) -> list[dict[str, Any]]:
+    identity = _scheduler_series_identity(data)
+    episode = int(data.get("episode_number") or 0)
+    if not identity or episode < 1:
+        return []
+    blockers: list[dict[str, Any]] = []
+    for row in _pipeline_shared_rows():
+        if str(row.get("id") or "") == job_id:
+            continue
+        if _scheduler_series_identity(row) != identity:
+            continue
+        other_episode = int(row.get("episode_number") or 0)
+        if not (0 < other_episode < episode):
+            continue
+        state = str(row.get("state") or "")
+        if state != "SUCCESS":
+            blockers.append(row)
+    blockers.sort(key=lambda row: int(row.get("episode_number") or 0))
+    return blockers
+
+def _pipeline_wait_for_upload_turn(job_id: str, data: dict[str, Any]) -> None:
+    """Keep an encoded serial episode READY until all lower episodes succeed."""
+    if not SMART_PIPELINE_SCHEDULER or not _scheduler_series_identity(data):
+        return
+    started = time.monotonic()
+    while True:
+        blockers = _pipeline_lower_blockers(data, job_id)
+        if not blockers:
+            update_progress(job_id, "READY", 100, message="Giliran upload tersedia.", detail="Episode sebelumnya sudah berhasil; memulai upload Telegram.")
+            with queue_lock:
+                snap = dict(jobs.get(job_id) or data)
+            cluster_store.publish_enterprise_job(snap)
+            return
+        first = blockers[0]
+        ep = int(first.get("episode_number") or 0)
+        state = str(first.get("state") or "QUEUED")
+        worker = str(first.get("assigned_worker") or first.get("worker_id") or "worker lain")
+        if state == "ERROR":
+            message = f"Menunggu E{ep:02d} diperbaiki sebelum upload."
+        else:
+            message = f"Encode selesai; menunggu E{ep:02d} berhasil di {worker}."
+        update_progress(job_id, "READY", 50, message=message, detail=f"READY · urutan upload serial dijaga · E{ep:02d}={state}")
+        with queue_lock:
+            snap = dict(jobs.get(job_id) or data)
+        snap.update({"pipeline_status": "READY_WAITING", "waiting_for_episode": ep, "waiting_for_job": first.get("id")})
+        cluster_store.publish_enterprise_job(snap)
+        if time.monotonic() - started > SMART_PIPELINE_WAIT_TIMEOUT_SECONDS:
+            raise RuntimeError(f"Timeout menunggu urutan upload. Episode E{ep:02d} belum berhasil.")
+        time.sleep(SMART_PIPELINE_POLL_SECONDS)
 
 def process_job(job_id: str) -> None:
     with queue_lock:
@@ -3486,6 +3641,10 @@ def process_job(job_id: str) -> None:
         set_job(job_id, subtitle_info=subtitle_info)
         update_progress(job_id, "PROCESSING", 1, message=f"Memproses video. {subtitle_info}", detail=f"{subtitle_info} · {data.get('watermark_info', 'Tanpa logo')}")
         process_video(job_id, input_path, output_path, thumb_path, subtitle_path, data)
+
+        # Serial episodes may be prepared concurrently on different Railway workers.
+        # Only the Telegram upload is released in episode order. Films bypass this gate.
+        _pipeline_wait_for_upload_turn(job_id, data)
 
         full_caption = build_caption(
             data["metadata"],
@@ -3716,7 +3875,7 @@ def home():
     with queue_lock:
         active_jobs = sum(
             1 for item in jobs.values()
-            if item.get("state") in {"QUEUED", "DOWNLOADING", "PROCESSING", "UPLOADING"}
+            if item.get("state") in {"QUEUED", "DOWNLOADING", "PROCESSING", "PREPARING", "READY", "UPLOADING"}
         )
     return render_template_string(
         LANDING_HTML,
@@ -3866,10 +4025,27 @@ def scheduler_dashboard_data():
     })
 
 
+@app.get("/v14-status")
+def v14_status():
+    rows = cluster_store.enterprise_jobs() if cluster_store.enabled else []
+    pipeline_states = {"DOWNLOADING", "PROCESSING", "PREPARING", "READY", "UPLOADING"}
+    return jsonify({
+        "success": True,
+        "version": "14.0.0",
+        "worker_id": cluster_store.worker_id,
+        "smart_pipeline_scheduler": SMART_PIPELINE_SCHEDULER,
+        "serial_pipeline_only": True,
+        "film_scheduler_mode": "global-parallel",
+        "pipeline_poll_seconds": SMART_PIPELINE_POLL_SECONDS,
+        "active_pipeline_jobs": [row for row in rows if str(row.get("state") or "") in pipeline_states][:50],
+        "ready_count": sum(1 for row in rows if str(row.get("state") or "") == "READY"),
+        "last_error": cluster_store.last_error,
+    })
+
 @app.get("/scheduler-status")
 def scheduler_status():
     shared = cluster_store.enterprise_jobs() if cluster_store.enabled else []
-    active_states = {"QUEUED", "DOWNLOADING", "PROCESSING", "UPLOADING"}
+    active_states = {"QUEUED", "DOWNLOADING", "PROCESSING", "PREPARING", "READY", "UPLOADING"}
     workers = _scheduler_worker_ids()
     load = {wid: 0 for wid in workers}
     for item in shared:
@@ -3880,6 +4056,9 @@ def scheduler_status():
     return jsonify({
         "success": True, "version": CLUSTER_VERSION,
         "scheduler_enabled": SCHEDULER_ENABLED and ENTERPRISE_CLUSTER_ENABLED and cluster_store.enabled,
+        "series_sequential_scheduler": SERIES_SEQUENTIAL_SCHEDULER,
+        "smart_pipeline_scheduler": SMART_PIPELINE_SCHEDULER,
+        "pipeline_poll_seconds": SMART_PIPELINE_POLL_SECONDS,
         "namespace": cluster_store.namespace, "worker_id": cluster_store.worker_id,
         "poll_seconds": SCHEDULER_POLL_SECONDS, "max_jobs_per_worker": SCHEDULER_MAX_JOBS_PER_WORKER,
         "workers": workers, "worker_load": load,
@@ -3894,7 +4073,7 @@ def enterprise_status():
     local_jobs = get_jobs_snapshot()
     shared_jobs = cluster_store.enterprise_jobs()
     workers = cluster_store.workers() if cluster_store.enabled else []
-    active_states = {"QUEUED", "DOWNLOADING", "PROCESSING", "UPLOADING"}
+    active_states = {"QUEUED", "DOWNLOADING", "PROCESSING", "PREPARING", "READY", "UPLOADING"}
     return jsonify({
         "success": True,
         "version": CLUSTER_VERSION,
@@ -3915,7 +4094,7 @@ def enterprise_status():
 @app.get("/v13-status")
 def v13_status():
     shared_jobs = cluster_store.enterprise_jobs() if cluster_store.enabled else []
-    active_states = {"QUEUED", "DOWNLOADING", "PROCESSING", "UPLOADING"}
+    active_states = {"QUEUED", "DOWNLOADING", "PROCESSING", "PREPARING", "READY", "UPLOADING"}
     canonical = load_series_store()
     return jsonify({
         "success": True, "version": CLUSTER_VERSION,
@@ -4539,7 +4718,7 @@ def add_saved_episode():
         else:
             meta = metadata_from_saved_series(series, ep, str(request.form.get("saved_episode_title") or ""))
         with queue_condition:
-            active=sum(1 for i in jobs.values() if i["state"] in {"QUEUED","DOWNLOADING","PROCESSING","UPLOADING"})
+            active=sum(1 for i in jobs.values() if i["state"] in {"QUEUED","DOWNLOADING","PROCESSING","PREPARING","READY","UPLOADING"})
             if active>=MAX_QUEUE: raise ValueError(f"Antrean penuh. Maksimal {MAX_QUEUE}")
             jid=uuid.uuid4().hex[:12]; wd=Path(tempfile.mkdtemp(prefix=f"drive-telegram-v10-6-2-2-{jid}-"))
             watermark_config=save_watermark_upload("saved_watermark",wd)
@@ -4574,7 +4753,7 @@ def manual_enqueue():
             if not subtitle_drive: raise ValueError("Mode subtitle Drive memerlukan link subtitle.")
             subtitle_drive_file_id = extract_drive_file_id(subtitle_drive)
         with queue_condition:
-            active_count = sum(1 for item in jobs.values() if item["state"] in {"QUEUED","DOWNLOADING","PROCESSING","UPLOADING"})
+            active_count = sum(1 for item in jobs.values() if item["state"] in {"QUEUED","DOWNLOADING","PROCESSING","PREPARING","READY","UPLOADING"})
             if active_count >= MAX_QUEUE: raise ValueError(f"Antrean penuh. Maksimal {MAX_QUEUE}.")
             job_id = uuid.uuid4().hex[:12]
             work_dir = Path(tempfile.mkdtemp(prefix=f"drive-telegram-v10-6-2-2-{job_id}-"))
@@ -4645,7 +4824,7 @@ def enqueue():
         return jsonify({"success": False, "error": str(exc)}), 400
 
     with queue_condition:
-        active = sum(1 for item in jobs.values() if item["state"] in {"QUEUED","DOWNLOADING","PROCESSING","UPLOADING"})
+        active = sum(1 for item in jobs.values() if item["state"] in {"QUEUED","DOWNLOADING","PROCESSING","PREPARING","READY","UPLOADING"})
         if active >= MAX_QUEUE:
             return jsonify({"success": False, "error": f"Antrean penuh. Maksimal {MAX_QUEUE} pekerjaan."}), 429
 
