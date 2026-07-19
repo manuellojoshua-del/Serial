@@ -106,7 +106,7 @@ EPISODE_BUTTONS_PER_ROW = max(
 )
 
 
-CLUSTER_VERSION = "14.0.0"
+CLUSTER_VERSION = "14.2.0"
 
 
 def _deep_merge_cluster(remote: Any, local: Any) -> Any:
@@ -1145,10 +1145,13 @@ def create_or_update_series_index(
     data: dict[str, Any],
     episode_message_id: int,
 ) -> int:
-    """Kirim katalog poster terbaru dan hapus katalog serial sebelumnya.
+    """Pertahankan satu posting katalog untuk setiap serial.
 
-    Katalog berisi judul, tahun, serta tautan teks seluruh episode seperti contoh
-    Telegram. Video episode tetap berada sebagai pesan tersendiri.
+    Episode pertama membuat posting poster katalog. Episode berikutnya hanya
+    mengedit caption/teks posting yang sama sehingga daftar tautan berubah dari
+    E.01 menjadi E.01 | E.02 | E.03 tanpa membuat poster baru. Jika katalog lama
+    dibuat oleh bot lain dan tidak dapat diedit, aplikasi membuat katalog baru
+    sebagai fallback lalu mencoba menghapus katalog lama.
     """
     metadata = data["metadata"]
     episode_number = int(data.get("episode_number") or 0)
@@ -1186,6 +1189,7 @@ def create_or_update_series_index(
         "episodes": {},
     }
 
+    series.setdefault("episodes", {})
     series["episodes"][str(episode_number)] = {
         "message_id": episode_message_id,
         "url": telegram_message_url(target_chat_id, episode_message_id),
@@ -1200,7 +1204,6 @@ def create_or_update_series_index(
         "uploaded_by_bot_username": str(ACTIVE_BOT.get("username") or ""),
     }
 
-    # Selalu segarkan metadata seri dari TMDB/metadata episode terbaru.
     for field, fallback in (
         ("series_title", series.get("series_title")),
         ("original_title", series.get("original_title")),
@@ -1219,55 +1222,95 @@ def create_or_update_series_index(
 
     caption = build_series_index_caption(series)
     previous_index_id = int(series.get("index_message_id") or 0)
+    previous_type = str(series.get("index_type") or "")
+    edited = False
+    result: dict[str, Any] | None = None
 
-    payload: dict[str, Any] = {
-        "chat_id": target_chat_id,
-        "caption": caption,
-        "parse_mode": "HTML",
-    }
-    if thread_id > 0:
-        payload["message_thread_id"] = str(thread_id)
+    # Jalur utama v14.2: edit posting katalog yang sudah ada. Telegram hanya
+    # mengizinkan bot pembuat pesan mengeditnya, sehingga CATALOG_BOT_TOKEN harus
+    # sama pada seluruh Railway.
+    if previous_index_id > 0:
+        try:
+            if previous_type == "photo":
+                result = telegram_post(
+                    "editMessageCaption",
+                    {
+                        "chat_id": target_chat_id,
+                        "message_id": str(previous_index_id),
+                        "caption": caption,
+                        "parse_mode": "HTML",
+                    },
+                    token=CATALOG_BOT_TOKEN,
+                )
+            else:
+                result = telegram_post(
+                    "editMessageText",
+                    {
+                        "chat_id": target_chat_id,
+                        "message_id": str(previous_index_id),
+                        "text": caption,
+                        "parse_mode": "HTML",
+                        "disable_web_page_preview": "true",
+                    },
+                    token=CATALOG_BOT_TOKEN,
+                )
+            edited = True
+            series["index_message_id"] = previous_index_id
+            series["catalog_edit_mode"] = "edited-existing-message"
+            series.pop("catalog_edit_warning", None)
+        except Exception as exc:
+            series["catalog_edit_warning"] = str(exc)
 
-    poster = str(series.get("poster_url") or "")
-    if poster:
-        payload["photo"] = poster
-        result = telegram_post("sendPhoto", payload, token=CATALOG_BOT_TOKEN)
-        series["index_type"] = "photo"
-    else:
-        payload.pop("caption", None)
-        payload["text"] = caption
-        result = telegram_post("sendMessage", payload, token=CATALOG_BOT_TOKEN)
-        series["index_type"] = "text"
+    # Episode pertama, atau fallback ketika katalog lama dibuat bot berbeda.
+    if not edited:
+        payload: dict[str, Any] = {
+            "chat_id": target_chat_id,
+            "caption": caption,
+            "parse_mode": "HTML",
+        }
+        if thread_id > 0:
+            payload["message_thread_id"] = str(thread_id)
 
-    new_index_id = int(result["result"]["message_id"])
-    series["index_message_id"] = new_index_id
-    series["index_bot_id"] = int((result.get("_bot") or {}).get("id") or ACTIVE_BOT.get("id") or 0)
-    series["index_bot_username"] = str((result.get("_bot") or {}).get("username") or ACTIVE_BOT.get("username") or "")
-    series["previous_index_message_id"] = previous_index_id
+        poster = str(series.get("poster_url") or "")
+        if poster:
+            payload["photo"] = poster
+            result = telegram_post("sendPhoto", payload, token=CATALOG_BOT_TOKEN)
+            series["index_type"] = "photo"
+        else:
+            payload.pop("caption", None)
+            payload["text"] = caption
+            payload["disable_web_page_preview"] = "true"
+            result = telegram_post("sendMessage", payload, token=CATALOG_BOT_TOKEN)
+            series["index_type"] = "text"
+
+        new_index_id = int(result["result"]["message_id"])
+        series["index_message_id"] = new_index_id
+        series["catalog_edit_mode"] = "created-new-message" if previous_index_id <= 0 else "fallback-recreated"
+
+        if previous_index_id > 0 and previous_index_id != new_index_id:
+            try:
+                telegram_post(
+                    "deleteMessage",
+                    {"chat_id": target_chat_id, "message_id": str(previous_index_id)},
+                    token=CATALOG_BOT_TOKEN,
+                    try_all_bots=True,
+                )
+                series["previous_index_deleted"] = True
+                series.pop("delete_warning", None)
+            except Exception as exc:
+                series["previous_index_deleted"] = False
+                series["delete_warning"] = str(exc)
+
+    bot_info = (result or {}).get("_bot") or {}
+    series["index_bot_id"] = int(bot_info.get("id") or CATALOG_BOT.get("id") or 0)
+    series["index_bot_username"] = str(bot_info.get("username") or CATALOG_BOT.get("username") or "")
     series["catalog_bot_id"] = int(CATALOG_BOT.get("id") or 0)
     series["catalog_bot_username"] = str(CATALOG_BOT.get("username") or "")
     series["catalog_version"] = CLUSTER_VERSION
-
-    # Hapus posting indeks lama hanya setelah posting baru berhasil dibuat.
-    if previous_index_id > 0 and previous_index_id != new_index_id:
-        try:
-            telegram_post(
-                "deleteMessage",
-                {"chat_id": target_chat_id, "message_id": str(previous_index_id)},
-                token=CATALOG_BOT_TOKEN,
-                try_all_bots=True,
-            )
-            series["previous_index_deleted"] = True
-            series.pop("delete_warning", None)
-        except Exception as exc:
-            # Episode tetap dianggap sukses; peringatan disimpan agar dapat diperiksa.
-            series["previous_index_deleted"] = False
-            series["delete_warning"] = str(exc)
-
     series["updated_at"] = now_ts()
     store[key] = series
-    save_series_store(store, reason="refresh-index")
-    return new_index_id
+    save_series_store(store, reason="refresh-single-catalog")
+    return int(series.get("index_message_id") or 0)
 
 queue_lock = threading.Lock()
 queue_condition = threading.Condition(queue_lock)
@@ -3350,11 +3393,11 @@ def _scheduler_created_value(job: dict[str, Any]) -> float:
 
 
 def _scheduler_series_ready(candidate: dict[str, Any], rows: list[dict[str, Any]]) -> bool:
-    """Dispatch serial episodes in order while allowing pipeline preparation.
+    """Strict sequential dispatch for serial episodes only.
 
-    With Smart Pipeline enabled, E02 may be claimed after E01 has already been
-    claimed by another worker. E02 can download/encode in parallel, but upload
-    remains blocked until E01 reaches SUCCESS. Films are never serialized.
+    A serial episode may be claimed only after every lower-numbered episode from
+    the same series, season, chat, and topic has reached SUCCESS. Film jobs do
+    not have an episode number, so they remain globally parallel.
     """
     identity = _scheduler_series_identity(candidate)
     if not identity:
@@ -3369,19 +3412,10 @@ def _scheduler_series_ready(candidate: dict[str, Any], rows: list[dict[str, Any]
         if _scheduler_series_identity(other) != identity:
             continue
         other_episode = int(other.get("episode_number") or 0)
-        if not (other_episode > 0 and other_episode < candidate_episode):
+        if not (0 < other_episode < candidate_episode):
             continue
-        state = str(other.get("state") or "")
-        status = str(other.get("scheduler_status") or "")
-        if SMART_PIPELINE_SCHEDULER:
-            # Lower episodes must at least be claimed/dispatched first. Once they
-            # are active or READY, another idle Railway may prepare the next one.
-            if state == "QUEUED" and status not in {"CLAIMED", "PINNED_LOCAL", "LOCAL"}:
-                return False
-        else:
-            running = state in {"DOWNLOADING", "PROCESSING", "PREPARING", "READY", "UPLOADING"} or (state == "QUEUED" and status == "CLAIMED")
-            if running or state == "QUEUED":
-                return False
+        if str(other.get("state") or "") != "SUCCESS":
+            return False
     return True
 
 def _scheduler_claim_remote_jobs() -> None:
@@ -3446,7 +3480,7 @@ def _scheduler_claim_remote_jobs() -> None:
                 "assigned_worker": cluster_store.worker_id,
                 "worker_id": cluster_store.worker_id,
                 "scheduler_status": "CLAIMED",
-                "message": f"Diambil berurutan oleh worker {cluster_store.worker_id}.",
+                "message": f"Episode sebelumnya berhasil; diproses oleh {cluster_store.worker_id}.",
                 "claimed_at": now_ts(),
                 "series_sequential": bool(series_identity),
             })
@@ -3460,7 +3494,7 @@ def _scheduler_claim_remote_jobs() -> None:
                 "error": None, "started_at": None, "finished_at": None,
                 "downloaded_bytes": 0, "total_bytes": 0, "file_size_bytes": 0,
                 "message_id": None, "stage_progress": 0.0, "overall_progress": 0.0,
-                "progress_detail": "Sudah diklaim sesuai urutan episode; menunggu proses lokal.", "eta_seconds": 0, "eta_human": "-",
+                "progress_detail": "Diklaim setelah semua episode sebelumnya SUCCESS; menunggu proses lokal.", "eta_seconds": 0, "eta_human": "-",
                 "submitted_by": remote.get("submitted_by"), "preferred_worker": remote.get("preferred_worker"),
                 "assigned_worker": cluster_store.worker_id, "worker_id": cluster_store.worker_id,
                 "scheduler_status": "CLAIMED", "scheduler_payload": payload,
@@ -4031,7 +4065,7 @@ def v14_status():
     pipeline_states = {"DOWNLOADING", "PROCESSING", "PREPARING", "READY", "UPLOADING"}
     return jsonify({
         "success": True,
-        "version": "14.0.0",
+        "version": "14.2.0",
         "worker_id": cluster_store.worker_id,
         "smart_pipeline_scheduler": SMART_PIPELINE_SCHEDULER,
         "serial_pipeline_only": True,

@@ -1,64 +1,41 @@
-# CineDrive v14 Enterprise Smart Pipeline Scheduler
+# CineDrive v14.2 — Single Serial Catalog
 
-Versi v14 menambahkan pipeline khusus serial pada Global Queue CineDrive.
+Versi ini mempertahankan **satu posting katalog untuk setiap serial**.
 
-## Cara kerja serial
+## Alur serial
 
-- Episode diklaim menurut urutan E01, E02, E03, dan seterusnya.
-- Setelah E01 sudah diklaim, Railway lain yang kosong dapat mulai mengunduh dan meng-encode E02.
-- Hasil encode E02 masuk status `READY` dan belum diunggah ke Telegram.
-- E02 baru diunggah setelah E01 berstatus `SUCCESS`.
-- E03 dapat dipersiapkan oleh worker lain dengan aturan yang sama.
-- Urutan posting Telegram tetap benar, tetapi waktu download/encode antar-episode dapat tumpang tindih.
+1. Episode pertama dikirim sebagai video.
+2. Bot katalog membuat satu posting poster berisi judul dan tautan `E.01`.
+3. Saat Episode 2 selesai, bot mengedit posting katalog yang sama menjadi `E.01 | E.02`.
+4. Episode berikutnya terus ditambahkan ke posting yang sama.
+5. Mengetuk nomor episode membuka langsung pesan video episode tersebut.
 
-## Film
+Tidak ada poster katalog baru untuk setiap episode. Video episode tetap dikirim sebagai pesan tersendiri.
 
-Smart Pipeline hanya berlaku untuk episode serial (`episode_number >= 1`). Film tetap memakai scheduler global paralel dan tidak menunggu film lain.
+## Multi-Railway
 
-## Status pipeline
+Semua Railway harus memakai nilai `CATALOG_BOT_TOKEN` yang sama. Telegram hanya mengizinkan bot pembuat pesan mengedit pesan tersebut.
 
-Status tambahan:
+Jika katalog lama dibuat oleh bot berbeda dan tidak dapat diedit, CineDrive membuat katalog baru sebagai fallback lalu mencoba menghapus katalog lama.
 
-- `PREPARING` / `PROCESSING`: sedang download atau encode.
-- `READY`: encode selesai dan menunggu episode sebelumnya berhasil.
-- `UPLOADING`: giliran upload sudah tersedia.
-- `SUCCESS`: episode telah diposting dan katalog diperbarui.
-
-Endpoint pemeriksaan:
-
-```text
-/v14-status
-/scheduler-status
-/scheduler-dashboard-data?key=SECRET_KEY
-```
-
-## Variabel Railway
-
-Pasang pada semua worker:
+## Variabel penting
 
 ```env
-SCHEDULER_ENABLED=1
-SCHEDULER_POLL_SECONDS=5
-SCHEDULER_MAX_JOBS_PER_WORKER=1
-ENTERPRISE_CLUSTER_ENABLED=1
+CATALOG_BOT_TOKEN=TOKEN_BOT_KATALOG
+SERIES_SEQUENTIAL_SCHEDULER=1
 SMART_PIPELINE_SCHEDULER=1
-SMART_PIPELINE_POLL_SECONDS=5
-SMART_PIPELINE_WAIT_TIMEOUT_SECONDS=86400
+SCHEDULER_ENABLED=1
 GLOBAL_SYNC_ENABLED=1
 GLOBAL_SYNC_BOOTSTRAP_LOCAL=0
 GLOBAL_DATABASE_PUBLISH_LOCAL=0
 ```
 
-Variabel Supabase, namespace, channel, dan `CATALOG_BOT_TOKEN` harus sama. `CLUSTER_WORKER_ID` dan `BOT_TOKEN` worker harus berbeda pada setiap Railway.
-
-## Aset global
-
-Agar episode bisa dipindahkan ke worker lain, video, subtitle, dan logo harus dapat diunduh semua Railway. Gunakan Google Drive publik atau URL publik. Upload file langsung dari HP tetap menjadi job lokal.
+`CATALOG_BOT_TOKEN` boleh sama dengan `BOT_TOKEN` jika hanya memakai satu bot.
 
 ## Deploy
 
-1. Upload seluruh isi ZIP ke repository.
-2. Jalankan `supabase_setup.sql` bila belum pernah dijalankan.
-3. Pasang variabel di atas pada semua Railway.
+1. Ganti seluruh file project dengan isi ZIP.
+2. Gunakan source yang sama pada semua Railway.
+3. Pastikan bot katalog menjadi admin dan memiliki izin kirim, edit, serta hapus pesan.
 4. Redeploy semua service.
-5. Buka `/v14-status` dan pastikan `smart_pipeline_scheduler` bernilai `true`.
+5. Tambahkan episode baru. Katalog lama akan diedit, bukan dibuat ulang.
