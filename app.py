@@ -106,7 +106,7 @@ EPISODE_BUTTONS_PER_ROW = max(
 )
 
 
-CLUSTER_VERSION = "12.3.0"
+CLUSTER_VERSION = "13.1.0"
 
 
 def _deep_merge_cluster(remote: Any, local: Any) -> Any:
@@ -134,6 +134,12 @@ SCHEDULER_ENABLED = os.getenv("SCHEDULER_ENABLED", "1").strip().lower() in {"1",
 SCHEDULER_POLL_SECONDS = max(3, int(os.getenv("SCHEDULER_POLL_SECONDS", "5") or "5"))
 SCHEDULER_MAX_JOBS_PER_WORKER = max(1, int(os.getenv("SCHEDULER_MAX_JOBS_PER_WORKER", "1") or "1"))
 SCHEDULER_CLAIM_TTL_SECONDS = max(300, int(os.getenv("SCHEDULER_CLAIM_TTL_SECONDS", "21600") or "21600"))
+
+# CineDrive v13 Enterprise
+CATALOG_BOT_TOKEN_RAW = os.getenv("CATALOG_BOT_TOKEN", "").strip()
+V13_QUEUE_FAILOVER_ENABLED = os.getenv("V13_QUEUE_FAILOVER_ENABLED", "1").strip().lower() in {"1", "true", "yes", "on"}
+V13_QUEUE_FAILOVER_SECONDS = max(30, int(os.getenv("V13_QUEUE_FAILOVER_SECONDS", "120") or "120"))
+V13_MAX_RECENT_JOBS = max(10, min(200, int(os.getenv("V13_MAX_RECENT_JOBS", "50") or "50")))
 _global_source_published = False
 _global_source_lock = threading.Lock()
 
@@ -630,9 +636,12 @@ def _cluster_publish_enterprise_job(self: ClusterStore, job: dict[str, Any]) -> 
         "season_number": job.get("season_number"), "episode_number": job.get("episode_number"),
         "target_chat_id": job.get("target_chat_id"), "message_thread_id": job.get("message_thread_id"),
         "created_at": job.get("created_at"), "started_at": job.get("started_at"), "finished_at": job.get("finished_at"),
-        "worker_id": job.get("worker_id") or self.worker_id,
+        # Preserve an explicit empty assignment for portable jobs.  An empty
+        # assigned_worker means the global queue is waiting for any idle worker.
+        "worker_id": job.get("worker_id") if "worker_id" in job else self.worker_id,
         "submitted_by": job.get("submitted_by") or self.worker_id,
-        "assigned_worker": job.get("assigned_worker") or self.worker_id,
+        "assigned_worker": job.get("assigned_worker") if "assigned_worker" in job else self.worker_id,
+        "preferred_worker": job.get("preferred_worker") or job.get("submitted_by") or self.worker_id,
         "scheduler_status": job.get("scheduler_status") or "LOCAL",
         "scheduler_local_only": bool(job.get("scheduler_local_only")),
         "scheduler_payload": job.get("scheduler_payload") if str(job.get("state")) == "QUEUED" else None,
@@ -692,7 +701,12 @@ def get_bot_identity(token: str = ACTIVE_BOT_TOKEN) -> dict[str, Any]:
     return identity
 
 ACTIVE_BOT = get_bot_identity()
+CATALOG_BOT_TOKEN = CATALOG_BOT_TOKEN_RAW or ACTIVE_BOT_TOKEN
+if CATALOG_BOT_TOKEN not in BOT_TOKENS:
+    BOT_TOKENS.append(CATALOG_BOT_TOKEN)
+CATALOG_BOT = get_bot_identity(CATALOG_BOT_TOKEN)
 print(f"[TELEGRAM] active bot index={ACTIVE_BOT_INDEX + 1}/{len(BOT_TOKENS)} username=@{ACTIVE_BOT.get('username') or '-'} worker={cluster_store.worker_id}", flush=True)
+print(f"[TELEGRAM] catalog bot username=@{CATALOG_BOT.get('username') or '-'} id={CATALOG_BOT.get('id') or 0}", flush=True)
 
 
 
@@ -1213,12 +1227,12 @@ def create_or_update_series_index(
     poster = str(series.get("poster_url") or "")
     if poster:
         payload["photo"] = poster
-        result = telegram_post("sendPhoto", payload)
+        result = telegram_post("sendPhoto", payload, token=CATALOG_BOT_TOKEN)
         series["index_type"] = "photo"
     else:
         payload.pop("caption", None)
         payload["text"] = caption
-        result = telegram_post("sendMessage", payload)
+        result = telegram_post("sendMessage", payload, token=CATALOG_BOT_TOKEN)
         series["index_type"] = "text"
 
     new_index_id = int(result["result"]["message_id"])
@@ -1226,6 +1240,9 @@ def create_or_update_series_index(
     series["index_bot_id"] = int((result.get("_bot") or {}).get("id") or ACTIVE_BOT.get("id") or 0)
     series["index_bot_username"] = str((result.get("_bot") or {}).get("username") or ACTIVE_BOT.get("username") or "")
     series["previous_index_message_id"] = previous_index_id
+    series["catalog_bot_id"] = int(CATALOG_BOT.get("id") or 0)
+    series["catalog_bot_username"] = str(CATALOG_BOT.get("username") or "")
+    series["catalog_version"] = CLUSTER_VERSION
 
     # Hapus posting indeks lama hanya setelah posting baru berhasil dibuat.
     if previous_index_id > 0 and previous_index_id != new_index_id:
@@ -1233,6 +1250,7 @@ def create_or_update_series_index(
             telegram_post(
                 "deleteMessage",
                 {"chat_id": target_chat_id, "message_id": str(previous_index_id)},
+                token=CATALOG_BOT_TOKEN,
                 try_all_bots=True,
             )
             series["previous_index_deleted"] = True
@@ -1896,7 +1914,7 @@ async function refreshGlobalStatus(){
   box.innerHTML=rows.map(j=>{
    const pct=Math.max(0,Math.min(100,Number(j.overall_progress||j.progress||0)));
    const started=Number(j.started_at||j.created_at||0);const finished=Number(j.finished_at||0);const duration=started?fmtDuration((finished||Date.now()/1000)-started):"-";
-   return `<div class="status-job"><div class="row"><div><strong>${esc(j.title||j.job_id||"Pekerjaan")}</strong>${j.episode_number?`<div class="muted">Season ${esc(j.season_number||1)} · Episode ${esc(j.episode_number)}</div>`:""}</div><span class="status-badge ${esc(j.state)}">${esc(j.state||"UNKNOWN")}</span></div><div class="progress"><div style="width:${pct}%"></div></div><div class="muted">Progres ${pct.toFixed(1)}%${j.eta_human&&j.eta_human!=="-"?` · ETA ${esc(j.eta_human)}`:""}</div><div class="status-meta"><div class="muted">Worker: <strong>${esc(j.assigned_worker||j.worker_id||"-")}</strong></div><div class="muted">Bot: <strong>${esc(j.bot_username||j.bot_name||"-")}</strong></div><div class="muted">Durasi: <strong>${esc(duration)}</strong></div><div class="muted">Pengirim: <strong>${esc(j.submitted_by||"-")}</strong></div><div class="muted">Topic: <strong>${esc(j.topic_name||"General")}</strong></div><div class="muted">Detail: <strong>${esc(j.progress_detail||j.message||"-")}</strong></div></div>${j.error?`<p class="error">${esc(j.error)}</p>`:""}</div>`;
+   return `<div class="status-job"><div class="row"><div><strong>${esc(j.title||j.job_id||"Pekerjaan")}</strong>${j.episode_number?`<div class="muted">Season ${esc(j.season_number||1)} · Episode ${esc(j.episode_number)}</div>`:""}</div><span class="status-badge ${esc(j.state)}">${esc(j.state||"UNKNOWN")}</span></div><div class="progress"><div style="width:${pct}%"></div></div><div class="muted">Progres ${pct.toFixed(1)}%${j.eta_human&&j.eta_human!=="-"?` · ETA ${esc(j.eta_human)}`:""}</div><div class="status-meta"><div class="muted">Worker: <strong>${esc(j.assigned_worker||j.worker_id||"Menunggu worker")}</strong></div><div class="muted">Bot: <strong>${esc(j.bot_username||j.bot_name||"-")}</strong></div><div class="muted">Durasi: <strong>${esc(duration)}</strong></div><div class="muted">Pengirim: <strong>${esc(j.submitted_by||"-")}</strong></div><div class="muted">Topic: <strong>${esc(j.topic_name||"General")}</strong></div><div class="muted">Detail: <strong>${esc(j.progress_detail||j.message||"-")}</strong></div></div>${j.error?`<p class="error">${esc(j.error)}</p>`:""}</div>`;
   }).join("");
  }catch(e){box.innerHTML=`<p class="error">${esc(e)}</p>`}
 }
@@ -3186,49 +3204,100 @@ def _scheduler_choose_worker() -> str:
     return min(workers, key=lambda wid: (counts.get(wid, 0), wid != cluster_store.worker_id, wid))
 
 
+def _scheduler_local_active_count() -> int:
+    """Return jobs already claimed/running on this Railway worker."""
+    active = {"CLAIMED", "DOWNLOADING", "PROCESSING", "UPLOADING"}
+    with queue_lock:
+        return sum(
+            1 for item in jobs.values()
+            if str(item.get("assigned_worker") or item.get("worker_id") or "") == cluster_store.worker_id
+            and (
+                str(item.get("state") or "") in active
+                or (
+                    str(item.get("state") or "") == "QUEUED"
+                    and str(item.get("scheduler_status") or "") == "CLAIMED"
+                )
+            )
+        )
+
+
 def _scheduler_submit_locked(job_id: str) -> None:
-    """Schedule a newly-created job. Caller must hold queue_condition/queue_lock."""
+    """Publish a job to the shared queue.
+
+    Portable Google Drive jobs are intentionally left unassigned so any idle
+    Railway can atomically claim them. Jobs containing uploaded local files stay
+    pinned to the Railway that received those files.
+    """
     job = jobs[job_id]
     payload, local_only = _scheduler_payload(job)
-    assigned = cluster_store.worker_id
-    if SCHEDULER_ENABLED and ENTERPRISE_CLUSTER_ENABLED and cluster_store.enabled and not local_only:
-        assigned = _scheduler_choose_worker()
     job["submitted_by"] = cluster_store.worker_id
-    job["assigned_worker"] = assigned
-    job["worker_id"] = assigned
-    job["scheduler_status"] = "ASSIGNED"
+    job["preferred_worker"] = cluster_store.worker_id
     job["scheduler_local_only"] = local_only
     job["scheduler_payload"] = payload
-    job["message"] = f"Dijadwalkan ke {assigned}."
-    cluster_store.publish_enterprise_job(dict(job))
-    if assigned == cluster_store.worker_id:
-        pending_jobs.append(job_id)
-    else:
-        # No uploaded local assets are present for portable jobs, so the empty temp directory can be removed.
+
+    if SCHEDULER_ENABLED and ENTERPRISE_CLUSTER_ENABLED and cluster_store.enabled and not local_only:
+        job["assigned_worker"] = ""
+        job["worker_id"] = ""
+        job["scheduler_status"] = "UNASSIGNED"
+        job["message"] = "Menunggu worker Railway yang kosong."
+        job["progress_detail"] = "Antrean global belum diklaim worker."
+        cluster_store.publish_enterprise_job(dict(job))
+        # Keep the lightweight local record for dashboard visibility, but do not
+        # put it in the local processing deque until this worker wins the claim.
         shutil.rmtree(Path(str(job.get("work_dir") or "")), ignore_errors=True)
+        job["work_dir"] = ""
+        return
+
+    job["assigned_worker"] = cluster_store.worker_id
+    job["worker_id"] = cluster_store.worker_id
+    job["scheduler_status"] = "PINNED_LOCAL" if local_only else "LOCAL"
+    job["message"] = "Menunggu giliran di worker lokal."
+    cluster_store.publish_enterprise_job(dict(job))
+    pending_jobs.append(job_id)
 
 
 def _scheduler_claim_remote_jobs() -> None:
     if not (SCHEDULER_ENABLED and ENTERPRISE_CLUSTER_ENABLED and cluster_store.enabled):
         return
-    for remote in cluster_store.enterprise_jobs():
-        if str(remote.get("state")) != "QUEUED":
+    if _scheduler_local_active_count() >= SCHEDULER_MAX_JOBS_PER_WORKER:
+        return
+
+    for remote in reversed(cluster_store.enterprise_jobs()):
+        if _scheduler_local_active_count() >= SCHEDULER_MAX_JOBS_PER_WORKER:
+            break
+        if str(remote.get("state") or "") != "QUEUED":
             continue
-        if str(remote.get("assigned_worker") or "") != cluster_store.worker_id:
+        assigned = str(remote.get("assigned_worker") or "").strip()
+        # Empty means globally available. Keep compatibility with older jobs that
+        # were explicitly assigned to this worker.
+        if assigned and assigned != cluster_store.worker_id:
+            continue
+        if bool(remote.get("scheduler_local_only")) and assigned != cluster_store.worker_id:
             continue
         job_id = str(remote.get("id") or "")
         payload = remote.get("scheduler_payload")
         if not job_id or not isinstance(payload, dict):
             continue
-        with queue_condition:
-            if job_id in jobs:
-                continue
+
         claimed, _ = cluster_store.acquire_lock(f"scheduler-claim:{job_id}", {
             "job_id": job_id, "assigned_worker": cluster_store.worker_id,
         })
         if not claimed:
             continue
-        work_dir = Path(tempfile.mkdtemp(prefix=f"cinedrive-v12-{job_id}-"))
+
+        # Publish ownership immediately, before touching the local queue. This is
+        # the visible atomic transition from UNASSIGNED to CLAIMED.
+        claimed_remote = dict(remote)
+        claimed_remote.update({
+            "assigned_worker": cluster_store.worker_id,
+            "worker_id": cluster_store.worker_id,
+            "scheduler_status": "CLAIMED",
+            "message": f"Diambil oleh worker kosong {cluster_store.worker_id}.",
+            "claimed_at": now_ts(),
+        })
+        cluster_store.publish_enterprise_job(claimed_remote)
+
+        work_dir = Path(tempfile.mkdtemp(prefix=f"cinedrive-v13-{job_id}-"))
         restored = dict(payload)
         restored.update({
             "id": job_id, "work_dir": str(work_dir), "state": "QUEUED",
@@ -3236,21 +3305,53 @@ def _scheduler_claim_remote_jobs() -> None:
             "error": None, "started_at": None, "finished_at": None,
             "downloaded_bytes": 0, "total_bytes": 0, "file_size_bytes": 0,
             "message_id": None, "stage_progress": 0.0, "overall_progress": 0.0,
-            "progress_detail": "Menunggu giliran scheduler.", "eta_seconds": 0, "eta_human": "-",
-            "submitted_by": remote.get("submitted_by"), "assigned_worker": cluster_store.worker_id,
-            "worker_id": cluster_store.worker_id, "scheduler_status": "CLAIMED",
-            "scheduler_payload": payload, "scheduler_local_only": False,
+            "progress_detail": "Sudah diklaim; menunggu proses lokal.", "eta_seconds": 0, "eta_human": "-",
+            "submitted_by": remote.get("submitted_by"), "preferred_worker": remote.get("preferred_worker"),
+            "assigned_worker": cluster_store.worker_id, "worker_id": cluster_store.worker_id,
+            "scheduler_status": "CLAIMED", "scheduler_payload": payload,
+            "scheduler_local_only": False,
         })
         with queue_condition:
-            if job_id not in jobs:
-                jobs[job_id] = restored
-                pending_jobs.append(job_id)
-                queue_condition.notify()
+            jobs[job_id] = restored
+            pending_jobs.append(job_id)
+            queue_condition.notify()
+
+
+def _scheduler_reassign_orphaned_queued_jobs() -> int:
+    """Alihkan job QUEUED yang ditugaskan ke worker yang sudah tidak aktif.
+
+    Hanya job yang belum mulai diproses yang dialihkan, sehingga tidak menimbulkan
+    encode/upload ganda pada job PROCESSING atau UPLOADING.
+    """
+    if not (V13_QUEUE_FAILOVER_ENABLED and SCHEDULER_ENABLED and cluster_store.enabled):
+        return 0
+    active_workers = set(_scheduler_worker_ids())
+    changed = 0
+    for remote in cluster_store.enterprise_jobs():
+        if str(remote.get("state") or "") != "QUEUED":
+            continue
+        assigned = str(remote.get("assigned_worker") or "")
+        if not assigned or assigned in active_workers:
+            continue
+        payload = remote.get("scheduler_payload")
+        if not isinstance(payload, dict):
+            continue
+        remote = dict(remote)
+        remote.update({
+            "assigned_worker": "", "worker_id": "",
+            "scheduler_status": "UNASSIGNED",
+            "message": f"Worker {assigned} tidak aktif; job dikembalikan ke antrean global.",
+            "failover_from": assigned, "failover_at": now_ts(),
+        })
+        cluster_store.publish_enterprise_job(remote)
+        changed += 1
+    return changed
 
 
 def scheduler_worker() -> None:
     while True:
         try:
+            _scheduler_reassign_orphaned_queued_jobs()
             _scheduler_claim_remote_jobs()
         except Exception as exc:
             cluster_store.last_error = f"scheduler: {exc}"
@@ -3744,6 +3845,30 @@ def enterprise_status():
         "lock_ttl_seconds": ENTERPRISE_LOCK_TTL_SECONDS,
         "last_error": cluster_store.last_error,
     })
+
+@app.get("/v13-status")
+def v13_status():
+    shared_jobs = cluster_store.enterprise_jobs() if cluster_store.enabled else []
+    active_states = {"QUEUED", "DOWNLOADING", "PROCESSING", "UPLOADING"}
+    canonical = load_series_store()
+    return jsonify({
+        "success": True, "version": CLUSTER_VERSION,
+        "mode": "enterprise-canonical-scheduler",
+        "namespace": cluster_store.namespace, "worker_id": cluster_store.worker_id,
+        "worker_count": len(_scheduler_worker_ids()),
+        "active_bot": get_bot_identity(ACTIVE_BOT_TOKEN),
+        "catalog_bot": get_bot_identity(CATALOG_BOT_TOKEN),
+        "configured_bot_count": len(BOT_TOKENS),
+        "series_count": len(canonical),
+        "episode_count": sum(len((x.get("episodes") or {})) for x in canonical.values() if isinstance(x, dict)),
+        "series_fingerprint": _json_fingerprint(canonical),
+        "scheduler_enabled": SCHEDULER_ENABLED and cluster_store.enabled,
+        "queue_failover_enabled": V13_QUEUE_FAILOVER_ENABLED,
+        "active_jobs": [j for j in shared_jobs if str(j.get("state")) in active_states][:V13_MAX_RECENT_JOBS],
+        "recent_jobs": shared_jobs[:V13_MAX_RECENT_JOBS],
+        "last_error": cluster_store.last_error,
+    })
+
 
 @app.get("/cluster-status")
 def cluster_status():

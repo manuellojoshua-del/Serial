@@ -76,3 +76,9 @@ notify pgrst, 'reload schema';
 -- Existing cinedrive_cluster schema and identity index are sufficient.
 create index if not exists cinedrive_cluster_bucket_item_idx
 on public.cinedrive_cluster(namespace, bucket, item_key);
+
+-- CineDrive v13 Enterprise uses the existing canonical document, worker,
+-- lock, and enterprise-job records. No additional table is required.
+create index if not exists cinedrive_cluster_record_updated_idx
+on public.cinedrive_cluster(namespace, record_type, updated_at desc);
+notify pgrst, 'reload schema';
