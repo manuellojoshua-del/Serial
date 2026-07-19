@@ -1,52 +1,23 @@
-# CineDrive v12.2 Episode Catalog
+# CineDrive v12.3 — Supabase Canonical Data Fix
 
-Versi ini mempertahankan seluruh fitur CineDrive v12.1 dan mengubah posting katalog serial agar menyerupai contoh katalog Telegram.
+Versi ini memperbaiki menu Serial dan Data agar memakai Supabase sebagai sumber utama.
 
-## Format katalog serial
+## Perubahan
+- Menu Serial selalu membaca dokumen kanonis `series` di Supabase.
+- Snapshot lama dari volume Railway tidak digabung ulang setelah migrasi dimatikan.
+- Menu Data menampilkan statistik global Supabase, fingerprint, dan cache lokal secara terpisah.
+- Upload/restore JSON sekarang menulis ke database global.
+- Tombol **Bersihkan serial duplikat** menormalkan data kanonis Supabase.
+- Cache `/data/*.json` hanya digunakan untuk fallback dan backup.
 
-Setiap episode baru akan menghasilkan satu posting katalog terbaru:
-
-- poster serial;
-- judul dan tahun;
-- daftar episode berupa tautan teks yang bisa diketuk;
-- maksimal 5 episode per baris;
-- tulisan **Tap episode untuk menonton**.
-
-Contoh:
-
-```text
-Tobat Jatuh Cinta (2026)
-
-➡️ E.01 | E.02 | E.03 | E.04 | E.05
-➡️ E.06 | E.07 | E.08 | E.09 | E.10
-
-👇 Tap episode untuk menonton
+## Variabel wajib di semua Railway
+```env
+GLOBAL_SYNC_ENABLED=1
+GLOBAL_SYNC_BOOTSTRAP_LOCAL=0
+GLOBAL_DATABASE_PUBLISH_LOCAL=0
+GLOBAL_DATABASE_REFRESH_SECONDS=5
 ```
 
-## Saat episode baru ditambahkan
+Gunakan `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `CLUSTER_NAMESPACE`, dan `CHANNEL_ID` yang sama di semua Railway. `CLUSTER_WORKER_ID` harus berbeda.
 
-1. Video episode baru dikirim ke Telegram.
-2. CineDrive membuat katalog baru yang berisi seluruh episode lama dan episode terbaru.
-3. Katalog lama dihapus setelah katalog baru berhasil dibuat.
-4. Video episode lama tidak dihapus.
-
-Semua tautan episode mengarah langsung ke pesan video masing-masing.
-
-## Persyaratan bot Telegram
-
-Semua bot yang digunakan harus menjadi administrator di channel atau supergroup tujuan dan memiliki izin:
-
-- Post Messages;
-- Delete Messages.
-
-Untuk multi-bot, penghapusan katalog lama dicoba menggunakan seluruh token bot yang dikonfigurasi.
-
-## Deploy
-
-1. Upload semua file dari ZIP ke repository.
-2. Gunakan source yang sama pada seluruh Railway.
-3. Jalankan kembali `supabase_setup.sql` bila belum pernah dijalankan.
-4. Redeploy seluruh service Railway.
-5. Tambahkan satu episode baru untuk membuat katalog dengan format baru.
-
-Versi aplikasi: `12.2.0`.
+Setelah deploy, buka menu **Data** dan tekan **Bersihkan serial duplikat** satu kali. Kemudian refresh kedua panel dan bandingkan `/global-sync-status`; fingerprint harus sama.

@@ -106,7 +106,7 @@ EPISODE_BUTTONS_PER_ROW = max(
 )
 
 
-CLUSTER_VERSION = "12.2.0"
+CLUSTER_VERSION = "12.3.0"
 
 
 def _deep_merge_cluster(remote: Any, local: Any) -> Any:
@@ -912,19 +912,29 @@ def _publish_local_series_source_once(local: dict[str, Any]) -> None:
 
 
 def _read_global_series_database(local: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Read the canonical Supabase database and converge legacy worker snapshots into it."""
+    """Read the canonical Supabase database.
+
+    Legacy Railway snapshots are used only while migration flags are enabled.
+    After migration, the canonical Supabase row is the only authoritative source,
+    preventing deleted/duplicate local records from being re-imported.
+    """
     local = local or {}
-    _publish_local_series_source_once(local)
-    canonical = cluster_store.get_document(GLOBAL_DATABASE_CANONICAL_KEY, {})
-    sources = cluster_store.list_documents(GLOBAL_DATABASE_SOURCE_PREFIX)
-    merged = _normalize_series_store(canonical, *sources.values())
-    if not merged and local and not cluster_store.enabled:
-        merged = _normalize_series_store(local)
-    if cluster_store.enabled and _json_fingerprint(merged) != _json_fingerprint(_normalize_series_store(canonical)):
+    migration_enabled = GLOBAL_DATABASE_PUBLISH_LOCAL and GLOBAL_SYNC_BOOTSTRAP_LOCAL
+    if migration_enabled:
+        _publish_local_series_source_once(local)
+    canonical_raw = cluster_store.get_document(GLOBAL_DATABASE_CANONICAL_KEY, {})
+    canonical = _normalize_series_store(canonical_raw)
+    if not cluster_store.enabled:
+        return canonical or _normalize_series_store(local)
+    if migration_enabled:
+        sources = cluster_store.list_documents(GLOBAL_DATABASE_SOURCE_PREFIX)
+        merged = _normalize_series_store(canonical, *sources.values(), local)
+    else:
+        merged = canonical
+    # Canonicalize/deduplicate the authoritative row itself.
+    if _json_fingerprint(merged) != _json_fingerprint(canonical_raw):
         cluster_store.save_document(GLOBAL_DATABASE_CANONICAL_KEY, merged, merge=False)
-        # Read-after-write makes every panel calculate its fingerprint from the same row.
-        canonical = cluster_store.get_document(GLOBAL_DATABASE_CANONICAL_KEY, merged)
-        merged = _normalize_series_store(canonical)
+        merged = _normalize_series_store(cluster_store.get_document(GLOBAL_DATABASE_CANONICAL_KEY, merged))
     return merged
 
 def load_series_store() -> dict[str, Any]:
@@ -967,8 +977,9 @@ def save_series_store(data: dict[str, Any], reason: str = "update") -> None:
         normalized = _normalize_series_store(data)
         if GLOBAL_SYNC_ENABLED and cluster_store.enabled:
             remote = cluster_store.get_document(GLOBAL_DATABASE_CANONICAL_KEY, {})
-            sources = cluster_store.list_documents(GLOBAL_DATABASE_SOURCE_PREFIX)
-            normalized = _normalize_series_store(remote, *sources.values(), normalized)
+            # New writes merge only with the canonical database. Legacy volume snapshots
+            # are migration inputs, never permanent authoritative sources.
+            normalized = _normalize_series_store(remote, normalized)
             normalized = cluster_store.save_document(GLOBAL_DATABASE_CANONICAL_KEY, normalized, merge=False)
             normalized = _normalize_series_store(cluster_store.get_document(GLOBAL_DATABASE_CANONICAL_KEY, normalized))
         temp_path = SERIES_STORE_PATH.with_suffix(".tmp")
@@ -1762,22 +1773,27 @@ button:active{transform:translateY(0) scale(.995)}
   </div>
 
   <div class="card page-section" id="dataSection">
-    <h2>🗄️ Manajemen Data Railway Volume</h2>
-    <p class="muted">Lihat, unduh, backup, pulihkan, dan pindahkan data JSON yang tersimpan di volume permanen.</p>
+    <h2>🗄️ Database Global Supabase</h2>
+    <p class="muted">Serial, episode, topic, dan hasil scan dibaca dari database global Supabase. File Railway Volume di bawah hanya cache dan backup.</p>
     {% if data_message %}<div class="notice">{{ data_message }}</div>{% endif %}
     <div class="data-grid">
       <div class="data-stat"><span class="muted">Serial</span><b>{{ data_stats.series_count }}</b></div>
       <div class="data-stat"><span class="muted">Episode</span><b>{{ data_stats.episode_count }}</b></div>
       <div class="data-stat"><span class="muted">Topic</span><b>{{ data_stats.topic_count }}</b></div>
-      <div class="data-stat"><span class="muted">Backup</span><b>{{ data_stats.backup_count }}</b></div>
-      <div class="data-stat"><span class="muted">Ruang kosong</span><b style="font-size:18px">{{ data_stats.free_space }}</b></div>
+      <div class="data-stat"><span class="muted">Hasil scan</span><b>{{ data_stats.scan_count }}</b></div>
+      <div class="data-stat"><span class="muted">Mode database</span><b style="font-size:18px">{{ data_stats.database_mode }}</b></div>
+      <div class="data-stat"><span class="muted">Fingerprint</span><b style="font-size:14px">{{ data_stats.fingerprint }}</b></div>
+      <div class="data-stat"><span class="muted">Backup lokal</span><b>{{ data_stats.backup_count }}</b></div>
+      <div class="data-stat"><span class="muted">Ruang kosong volume</span><b style="font-size:18px">{{ data_stats.free_space }}</b></div>
     </div>
     <div class="action-grid">
       <form method="get" action="{{ export_data_url }}"><input type="hidden" name="key" value="{{ key }}"><button type="submit">📦 Export semua data ZIP</button></form>
       <form method="post" action="{{ create_backup_url }}"><button type="submit">💾 Buat backup sekarang</button></form>
-      <form method="post" action="{{ clear_scan_url }}" onsubmit="return confirm('Hapus semua hasil scan?')"><button class="danger" type="submit">🧹 Bersihkan hasil scan</button></form>
+      <form method="post" action="{{ clear_scan_url }}" onsubmit="return confirm('Hapus semua hasil scan global?')"><button class="danger" type="submit">🧹 Bersihkan hasil scan</button></form>
+      <form method="post" action="{{ cleanup_global_url }}" onsubmit="return confirm('Gabungkan serial duplikat dan jadikan Supabase sebagai satu-satunya sumber utama?')"><button type="submit">🧬 Bersihkan serial duplikat</button></form>
     </div>
-    <h3>File JSON</h3>
+    <div class="batch-help"><strong>Cache lokal:</strong> {{ data_stats.local_series_count }} serial · {{ data_stats.local_topic_count }} topic. Cache tidak digunakan sebagai sumber utama saat GLOBAL_SYNC_BOOTSTRAP_LOCAL=0 dan GLOBAL_DATABASE_PUBLISH_LOCAL=0.</div>
+    <h3>Cache & Backup Railway Volume</h3>
     {% for f in data_files %}
     <div class="job"><div class="row"><div><strong>{{ f.label }}</strong><div class="muted">{{ f.path }} · {{ f.size }} · {{ f.modified }}</div></div><div style="display:flex;gap:8px"><a href="{{ f.download_url }}" style="color:#67e8f9">Download</a></div></div>
       <details style="margin-top:10px"><summary style="cursor:pointer">Lihat isi JSON</summary><pre class="json-box">{{ f.preview }}</pre></details>
@@ -3448,8 +3464,12 @@ def create_full_backup(reason: str = "manual") -> Path:
     return out
 
 def data_management_context(key: str) -> dict[str, Any]:
-    series = safe_json_read(SERIES_STORE_PATH, {})
-    topics = safe_json_read(TOPIC_STORE_PATH, [])
+    # Global Supabase data is authoritative; local files are shown only as cache/backup.
+    series = load_series_store()
+    topics = load_discovered_topics()
+    scans = load_scan_results()
+    local_series = safe_json_read(SERIES_STORE_PATH, {})
+    local_topics = safe_json_read(TOPIC_STORE_PATH, [])
     episode_count = sum(len((item or {}).get("episodes") or {}) for item in series.values()) if isinstance(series, dict) else 0
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
     backups = sorted([p for p in BACKUP_DIR.iterdir() if p.is_file()], key=lambda p:p.stat().st_mtime, reverse=True)
@@ -3466,7 +3486,22 @@ def data_management_context(key: str) -> dict[str, Any]:
     backup_items=[]
     for p in backups[:100]:
         st=p.stat(); backup_items.append({"name":p.name,"size":human_bytes(st.st_size),"modified":time.strftime("%d-%m-%Y %H:%M:%S",time.localtime(st.st_mtime))})
-    return {"data_stats":{"series_count":len(series) if isinstance(series,dict) else 0,"episode_count":episode_count,"topic_count":len(topics) if isinstance(topics,list) else 0,"backup_count":len(backups),"free_space":free},"data_files":files,"backup_files":backup_items}
+    return {
+        "data_stats": {
+            "series_count": len(series) if isinstance(series, dict) else 0,
+            "episode_count": episode_count,
+            "topic_count": len(topics) if isinstance(topics, list) else 0,
+            "scan_count": len(scans) if isinstance(scans, list) else 0,
+            "backup_count": len(backups),
+            "free_space": free,
+            "database_mode": "Supabase Global" if cluster_store.enabled else "Cache Lokal",
+            "fingerprint": _json_fingerprint(series)[:16],
+            "local_series_count": len(local_series) if isinstance(local_series, dict) else 0,
+            "local_topic_count": len(local_topics) if isinstance(local_topics, list) else 0,
+        },
+        "data_files": files,
+        "backup_files": backup_items,
+    }
 
 
 
@@ -3609,6 +3644,23 @@ def global_database_converge():
         "series_fingerprint": _json_fingerprint(series),
         "legacy_source_count": len(cluster_store.list_documents(GLOBAL_DATABASE_SOURCE_PREFIX)),
     })
+
+
+@app.post("/global-database-cleanup")
+def cleanup_global_database():
+    if not authorized():
+        return jsonify({"success": False, "error": "Unauthorized"}), 401
+    try:
+        canonical_raw = cluster_store.get_document(GLOBAL_DATABASE_CANONICAL_KEY, {}) if cluster_store.enabled else _read_local_series_store()
+        cleaned = _normalize_series_store(canonical_raw)
+        if cluster_store.enabled:
+            cluster_store.save_document(GLOBAL_DATABASE_CANONICAL_KEY, cleaned, merge=False)
+            cleaned = _normalize_series_store(cluster_store.get_document(GLOBAL_DATABASE_CANONICAL_KEY, cleaned))
+        atomic_json_write(SERIES_STORE_PATH, cleaned)
+        msg = f"Database global dibersihkan: {len(cleaned)} serial, fingerprint {_json_fingerprint(cleaned)[:16]}."
+    except Exception as exc:
+        msg = f"Pembersihan database gagal: {exc}"
+    return redirect(url_for("panel", key=request.args.get("key", ""), data_message=msg) + "#dataSection")
 
 
 @app.get("/scheduler-dashboard-data")
@@ -3761,6 +3813,7 @@ def panel():
         import_zip_url=url_for("import_zip_data", key=key),
         restore_backup_url=url_for("restore_data_backup", key=key),
         delete_backup_url=url_for("delete_data_backup", key=key),
+        cleanup_global_url=url_for("cleanup_global_database", key=key),
         **data_management_context(key),
     )
 
@@ -3804,8 +3857,13 @@ def import_json_data():
         if kind=="series" and not isinstance(data,dict): raise ValueError("Data series harus berupa object JSON.")
         if kind in {"topics","scan"} and not isinstance(data,list): raise ValueError("Data topic/scan harus berupa array JSON.")
         create_full_backup("before-import")
-        atomic_json_write(target,data)
-        msg=f"{target.name} berhasil dipulihkan."
+        if kind == "series":
+            save_series_store(data, reason="import-global")
+        elif kind == "topics":
+            save_discovered_topics(data)
+        else:
+            save_scan_results(data)
+        msg=f"{target.name} berhasil dipulihkan ke database global."
     except Exception as exc: msg=f"Import gagal: {exc}"
     return redirect(url_for("panel",key=request.args.get("key",""),data_message=msg)+"#dataSection")
 
@@ -3837,7 +3895,7 @@ def import_zip_data():
 @app.post("/data/clear-scan")
 def clear_scan_data():
     if not authorized(): return jsonify({"success":False,"error":"Unauthorized"}),401
-    create_full_backup("before-clear-scan"); atomic_json_write(SCAN_STORE_PATH,[])
+    create_full_backup("before-clear-scan"); save_scan_results([])
     return redirect(url_for("panel",key=request.args.get("key",""),data_message="Hasil scan berhasil dibersihkan.")+"#dataSection")
 
 def safe_backup_path(name: str) -> Path:
