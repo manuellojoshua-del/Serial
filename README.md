@@ -55,3 +55,25 @@ Buka:
 ## Catatan pembagian beban
 
 Pekerjaan diproses oleh Railway tempat pengguna menambahkannya. Distributed lock mencegah duplikasi lintas worker. Status pekerjaan dibagikan secara global, tetapi versi ini tidak memindahkan file upload atau direktori kerja secara otomatis dari satu Railway ke Railway lain.
+
+## CineDrive v12 — Enterprise Scheduler
+
+Versi v12 menambahkan pembagian pekerjaan otomatis antar worker Railway yang aktif.
+Pekerjaan yang sumbernya sepenuhnya dari Google Drive dapat dijadwalkan ke worker dengan beban paling rendah. Pekerjaan yang memakai file upload lokal, seperti subtitle upload atau logo watermark upload, tetap diproses oleh Railway tempat file tersebut diunggah karena file lokal tidak tersedia di worker lain.
+
+Variabel:
+
+```env
+SCHEDULER_ENABLED=1
+SCHEDULER_POLL_SECONDS=5
+SCHEDULER_MAX_JOBS_PER_WORKER=1
+SCHEDULER_CLAIM_TTL_SECONDS=21600
+```
+
+Status scheduler:
+
+```text
+/scheduler-status
+```
+
+Untuk semua Railway, gunakan `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `CLUSTER_NAMESPACE`, dan `CHANNEL_ID` yang sama. Gunakan `CLUSTER_WORKER_ID` berbeda pada setiap Railway.

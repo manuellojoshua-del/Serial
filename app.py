@@ -105,7 +105,7 @@ EPISODE_BUTTONS_PER_ROW = max(
 )
 
 
-CLUSTER_VERSION = "11.5.0"
+CLUSTER_VERSION = "12.0.0"
 
 
 def _deep_merge_cluster(remote: Any, local: Any) -> Any:
@@ -129,6 +129,10 @@ ENTERPRISE_CLUSTER_ENABLED = os.getenv("ENTERPRISE_CLUSTER_ENABLED", "1").strip(
 ENTERPRISE_LOCK_TTL_SECONDS = max(300, int(os.getenv("ENTERPRISE_LOCK_TTL_SECONDS", "21600") or "21600"))
 ENTERPRISE_JOB_RETENTION_SECONDS = max(3600, int(os.getenv("ENTERPRISE_JOB_RETENTION_SECONDS", "86400") or "86400"))
 ENTERPRISE_QUEUE_PREFIX = "enterprise-job:"
+SCHEDULER_ENABLED = os.getenv("SCHEDULER_ENABLED", "1").strip().lower() in {"1", "true", "yes", "on"}
+SCHEDULER_POLL_SECONDS = max(3, int(os.getenv("SCHEDULER_POLL_SECONDS", "5") or "5"))
+SCHEDULER_MAX_JOBS_PER_WORKER = max(1, int(os.getenv("SCHEDULER_MAX_JOBS_PER_WORKER", "1") or "1"))
+SCHEDULER_CLAIM_TTL_SECONDS = max(300, int(os.getenv("SCHEDULER_CLAIM_TTL_SECONDS", "21600") or "21600"))
 _global_source_published = False
 _global_source_lock = threading.Lock()
 
@@ -625,7 +629,13 @@ def _cluster_publish_enterprise_job(self: ClusterStore, job: dict[str, Any]) -> 
         "season_number": job.get("season_number"), "episode_number": job.get("episode_number"),
         "target_chat_id": job.get("target_chat_id"), "message_thread_id": job.get("message_thread_id"),
         "created_at": job.get("created_at"), "started_at": job.get("started_at"), "finished_at": job.get("finished_at"),
-        "worker_id": self.worker_id, "bot": get_bot_identity(ACTIVE_BOT_TOKEN) if "ACTIVE_BOT_TOKEN" in globals() else {},
+        "worker_id": job.get("worker_id") or self.worker_id,
+        "submitted_by": job.get("submitted_by") or self.worker_id,
+        "assigned_worker": job.get("assigned_worker") or self.worker_id,
+        "scheduler_status": job.get("scheduler_status") or "LOCAL",
+        "scheduler_local_only": bool(job.get("scheduler_local_only")),
+        "scheduler_payload": job.get("scheduler_payload") if str(job.get("state")) == "QUEUED" else None,
+        "bot": get_bot_identity(ACTIVE_BOT_TOKEN) if "ACTIVE_BOT_TOKEN" in globals() else {},
     }
     self.save_document(f"{ENTERPRISE_QUEUE_PREFIX}{job.get('id')}", public, merge=False)
 
@@ -3091,6 +3101,127 @@ def upload_video(job_id: str, video_path: Path, thumb_path: Path, caption: str, 
         video_file.close()
         thumb_file.close()
 
+
+def _scheduler_payload(job: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    """Create a portable job payload. Uploaded subtitle/logo files force local execution."""
+    uploaded_subtitle = str(job.get("uploaded_subtitle") or "")
+    watermark_path = str(job.get("watermark_path") or "")
+    local_only = bool(uploaded_subtitle or (job.get("watermark_enabled") and watermark_path))
+    skip = {
+        "work_dir", "uploaded_subtitle", "watermark_path", "state", "message", "error",
+        "started_at", "finished_at", "downloaded_bytes", "total_bytes", "file_size_bytes",
+        "message_id", "index_message_id", "stage_progress", "overall_progress",
+        "progress_detail", "eta_seconds", "eta_human", "scheduler_payload",
+    }
+    payload = {k: v for k, v in job.items() if k not in skip}
+    payload["uploaded_subtitle"] = ""
+    payload["watermark_path"] = ""
+    return payload, local_only
+
+
+def _scheduler_worker_ids() -> list[str]:
+    ids = {cluster_store.worker_id}
+    try:
+        for row in cluster_store.workers():
+            if not isinstance(row, dict):
+                continue
+            worker_id = str(row.get("worker_id") or row.get("updated_by") or "").strip()
+            if not worker_id:
+                raw = row.get("value", row.get("data")) or {}
+                if isinstance(raw, dict):
+                    worker_id = str(raw.get("worker_id") or "").strip()
+            if worker_id:
+                ids.add(worker_id)
+    except Exception:
+        pass
+    return sorted(ids)
+
+
+def _scheduler_choose_worker() -> str:
+    workers = _scheduler_worker_ids()
+    counts = {wid: 0 for wid in workers}
+    try:
+        for item in cluster_store.enterprise_jobs():
+            if str(item.get("state")) not in {"QUEUED", "DOWNLOADING", "PROCESSING", "UPLOADING"}:
+                continue
+            assigned = str(item.get("assigned_worker") or item.get("worker_id") or "")
+            if assigned in counts:
+                counts[assigned] += 1
+    except Exception:
+        pass
+    return min(workers, key=lambda wid: (counts.get(wid, 0), wid != cluster_store.worker_id, wid))
+
+
+def _scheduler_submit_locked(job_id: str) -> None:
+    """Schedule a newly-created job. Caller must hold queue_condition/queue_lock."""
+    job = jobs[job_id]
+    payload, local_only = _scheduler_payload(job)
+    assigned = cluster_store.worker_id
+    if SCHEDULER_ENABLED and ENTERPRISE_CLUSTER_ENABLED and cluster_store.enabled and not local_only:
+        assigned = _scheduler_choose_worker()
+    job["submitted_by"] = cluster_store.worker_id
+    job["assigned_worker"] = assigned
+    job["worker_id"] = assigned
+    job["scheduler_status"] = "ASSIGNED"
+    job["scheduler_local_only"] = local_only
+    job["scheduler_payload"] = payload
+    job["message"] = f"Dijadwalkan ke {assigned}."
+    cluster_store.publish_enterprise_job(dict(job))
+    if assigned == cluster_store.worker_id:
+        pending_jobs.append(job_id)
+    else:
+        # No uploaded local assets are present for portable jobs, so the empty temp directory can be removed.
+        shutil.rmtree(Path(str(job.get("work_dir") or "")), ignore_errors=True)
+
+
+def _scheduler_claim_remote_jobs() -> None:
+    if not (SCHEDULER_ENABLED and ENTERPRISE_CLUSTER_ENABLED and cluster_store.enabled):
+        return
+    for remote in cluster_store.enterprise_jobs():
+        if str(remote.get("state")) != "QUEUED":
+            continue
+        if str(remote.get("assigned_worker") or "") != cluster_store.worker_id:
+            continue
+        job_id = str(remote.get("id") or "")
+        payload = remote.get("scheduler_payload")
+        if not job_id or not isinstance(payload, dict):
+            continue
+        with queue_condition:
+            if job_id in jobs:
+                continue
+        claimed, _ = cluster_store.acquire_lock(f"scheduler-claim:{job_id}", {
+            "job_id": job_id, "assigned_worker": cluster_store.worker_id,
+        })
+        if not claimed:
+            continue
+        work_dir = Path(tempfile.mkdtemp(prefix=f"cinedrive-v12-{job_id}-"))
+        restored = dict(payload)
+        restored.update({
+            "id": job_id, "work_dir": str(work_dir), "state": "QUEUED",
+            "message": f"Diambil oleh scheduler {cluster_store.worker_id}.",
+            "error": None, "started_at": None, "finished_at": None,
+            "downloaded_bytes": 0, "total_bytes": 0, "file_size_bytes": 0,
+            "message_id": None, "stage_progress": 0.0, "overall_progress": 0.0,
+            "progress_detail": "Menunggu giliran scheduler.", "eta_seconds": 0, "eta_human": "-",
+            "submitted_by": remote.get("submitted_by"), "assigned_worker": cluster_store.worker_id,
+            "worker_id": cluster_store.worker_id, "scheduler_status": "CLAIMED",
+            "scheduler_payload": payload, "scheduler_local_only": False,
+        })
+        with queue_condition:
+            if job_id not in jobs:
+                jobs[job_id] = restored
+                pending_jobs.append(job_id)
+                queue_condition.notify()
+
+
+def scheduler_worker() -> None:
+    while True:
+        try:
+            _scheduler_claim_remote_jobs()
+        except Exception as exc:
+            cluster_store.last_error = f"scheduler: {exc}"
+        time.sleep(SCHEDULER_POLL_SECONDS)
+
 def process_job(job_id: str) -> None:
     with queue_lock:
         data = dict(jobs[job_id])
@@ -3261,6 +3392,7 @@ def ensure_worker_started() -> None:
             worker_started = True
 
 ensure_worker_started()
+threading.Thread(target=scheduler_worker, daemon=True, name="enterprise-scheduler-worker").start()
 
 
 def human_bytes(value: int) -> str:
@@ -3458,6 +3590,29 @@ def global_database_converge():
         "episode_count": sum(len(x.get("episodes") or {}) for x in series.values() if isinstance(x, dict)),
         "series_fingerprint": _json_fingerprint(series),
         "legacy_source_count": len(cluster_store.list_documents(GLOBAL_DATABASE_SOURCE_PREFIX)),
+    })
+
+
+@app.get("/scheduler-status")
+def scheduler_status():
+    shared = cluster_store.enterprise_jobs() if cluster_store.enabled else []
+    active_states = {"QUEUED", "DOWNLOADING", "PROCESSING", "UPLOADING"}
+    workers = _scheduler_worker_ids()
+    load = {wid: 0 for wid in workers}
+    for item in shared:
+        if str(item.get("state")) in active_states:
+            wid = str(item.get("assigned_worker") or item.get("worker_id") or "")
+            if wid:
+                load[wid] = load.get(wid, 0) + 1
+    return jsonify({
+        "success": True, "version": CLUSTER_VERSION,
+        "scheduler_enabled": SCHEDULER_ENABLED and ENTERPRISE_CLUSTER_ENABLED and cluster_store.enabled,
+        "namespace": cluster_store.namespace, "worker_id": cluster_store.worker_id,
+        "poll_seconds": SCHEDULER_POLL_SECONDS, "max_jobs_per_worker": SCHEDULER_MAX_JOBS_PER_WORKER,
+        "workers": workers, "worker_load": load,
+        "queued_jobs": [j for j in shared if str(j.get("state")) == "QUEUED"][:50],
+        "active_jobs": [j for j in shared if str(j.get("state")) in active_states][:50],
+        "last_error": cluster_store.last_error,
     })
 
 
@@ -3867,7 +4022,7 @@ def batch_enqueue():
                     **watermark_config,
                     **parse_encode_config("batch_"),
                 }
-                pending_jobs.append(job_id)
+                _scheduler_submit_locked(job_id)
                 created_ids.append(job_id)
 
             batch_id = uuid.uuid4().hex[:10]
@@ -4086,7 +4241,7 @@ def add_saved_episode():
             watermark_config=save_watermark_upload("saved_watermark",wd)
             chat=str(series.get("target_chat_id") or CHANNEL_ID); thread=int(series.get("message_thread_id") or 0)
             jobs[jid]={"id":jid,"file_id":video_id,"title":meta["title"],"metadata":meta,"tmdb_id":int(series.get("tmdb_id") or 0),"season_number":int(series.get("season_number") or 1),"episode_number":ep,"target_chat_id":chat,"message_thread_id":thread,"topic_name":str(series.get("topic_name") or topic_name_from_id(thread,chat)),"extra_caption":str(request.form.get("saved_extra_caption") or "").strip(),"subtitle_mode":mode,"uploaded_subtitle":"","subtitle_drive_file_id":sub_id,"public_folder_id":public_folder_id,"subtitle_info":"Menunggu pemeriksaan","work_dir":str(wd),"state":"QUEUED","message":"Menunggu giliran.","created_at":now_ts(),"started_at":None,"finished_at":None,"downloaded_bytes":0,"total_bytes":0,"file_size_bytes":0,"message_id":None,"error":None,"stage_progress":0.0,"overall_progress":0.0,"progress_detail":"Menunggu giliran.","eta_seconds":0,"eta_human":"-","manual_mode":bool(series.get("manual")),"saved_series_key":series_key,**watermark_config,**parse_encode_config("saved_")}
-            pending_jobs.append(jid); queue_condition.notify()
+            _scheduler_submit_locked(jid); queue_condition.notify()
         return redirect(url_for("panel", key=key, scan_message=f"{meta['episode_code']} ditambahkan ke {meta['series_title']}") + "#queueSection")
     except Exception as exc:
         return redirect(url_for("panel", key=key, scan_message=f"Tambah episode gagal: {exc}") + "#serialSection")
@@ -4137,7 +4292,7 @@ def manual_enqueue():
                 **watermark_config,
                 **parse_encode_config("manual_"),
             }
-            pending_jobs.append(job_id)
+            _scheduler_submit_locked(job_id)
             queue_condition.notify()
         return redirect(url_for("panel", key=key, scan_message=f"Konten manual '{metadata['title']}' ditambahkan ke antrean."))
     except Exception as exc:
@@ -4229,9 +4384,8 @@ def enqueue():
             **watermark_config,
             **parse_encode_config(),
         }
-        pending_jobs.append(job_id)
+        _scheduler_submit_locked(job_id)
         queue_condition.notify()
-        cluster_store.publish_enterprise_job(dict(jobs[job_id]))
 
     return redirect(url_for("panel", key=request.args.get("key", "")))
 
