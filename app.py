@@ -1,6 +1,7 @@
 
 import json
 import hashlib
+import html
 import os
 import re
 import shutil
@@ -105,7 +106,7 @@ EPISODE_BUTTONS_PER_ROW = max(
 )
 
 
-CLUSTER_VERSION = "12.0.0"
+CLUSTER_VERSION = "12.2.0"
 
 
 def _deep_merge_cluster(remote: Any, local: Any) -> Any:
@@ -1038,62 +1039,47 @@ def build_episode_keyboard(
 def build_series_index_caption(
     series: dict[str, Any],
 ) -> str:
-    """Caption poster serial dengan detail TMDB dan katalog episode terbaru."""
-    title = str(series.get("series_title") or "Serial")
-    original_title = str(series.get("original_title") or title)
-    year = str(series.get("year") or "-")
-    season = int(series.get("season_number") or 1)
-    count = len(series.get("episodes") or {})
+    """Buat katalog episode seperti contoh Telegram: judul + link episode per baris.
 
-    rating = series.get("vote_average")
-    vote_count = int(series.get("vote_count") or 0)
-    release_date = str(series.get("release_date") or "-")
-    certification = str(series.get("certification") or "-")
-    genres = ", ".join(series.get("genres") or []) or "-"
-    countries = ", ".join(series.get("countries") or []) or "-"
-    languages = ", ".join(series.get("languages") or []) or "-"
-    directors = ", ".join(series.get("directors") or []) or "-"
-    writers = ", ".join(series.get("writers") or []) or "-"
-    cast = ", ".join(series.get("cast") or []) or "-"
-    overview = str(series.get("overview") or "Sinopsis belum tersedia.")
+    Setiap episode ditampilkan sebagai tautan teks yang dapat diketuk. Katalog baru
+    dikirim setiap kali episode bertambah, lalu katalog sebelumnya dihapus.
+    """
+    title = html.escape(str(series.get("series_title") or "Serial"))
+    year = html.escape(str(series.get("year") or "-"))
+    episodes = series.get("episodes") or {}
+    ordered = sorted(episodes, key=lambda value: int(value))
 
-    rating_text = "-" if rating in (None, "") else str(rating)
-    lines = [
-        f"🎬 {title} ({year})",
-        f"📢 AKA: {original_title}",
-        "",
-        f"📺 Season {season}",
-        f"🎞 Episode tersedia: {count}",
-        f"⭐ Rating: {rating_text} dari {vote_count} pengguna",
-        f"🔞 Kategori: {certification}",
-        f"📅 Rilis: {release_date}",
-        f"🎭 Genre: {genres}",
-        f"🌍 Negara: {countries}",
-        f"🗣 Bahasa: {languages}",
-        "",
-        f"🎬 Sutradara: {directors}",
-        f"✍️ Penulis: {writers}",
-        f"👥 Pemeran: {cast}",
-        "",
-        "💬 Sinopsis:",
-        overview,
-        "",
-        "👇 Tap episode untuk menonton.",
-    ]
+    lines = [f"<b>{title} ({year})</b>", ""]
+    per_row = max(1, min(5, EPISODE_BUTTONS_PER_ROW))
+    for start in range(0, len(ordered), per_row):
+        row_items: list[str] = []
+        for episode_key in ordered[start:start + per_row]:
+            episode = episodes.get(episode_key) or {}
+            url = html.escape(str(episode.get("url") or ""), quote=True)
+            label = f"E.{int(episode_key):02d}"
+            if url:
+                row_items.append(f'<a href="{url}">{label}</a>')
+            else:
+                row_items.append(label)
+        lines.append("➡️ " + " | ".join(row_items))
 
+    lines.extend(["", "👇 <b>Tap episode untuk menonton</b>"])
     caption = "\n".join(lines)
-    if len(caption) > 1024:
-        # Telegram membatasi caption foto hingga 1024 karakter. Pangkas hanya
-        # sinopsis, sehingga detail utama dan petunjuk tombol tetap terlihat.
-        marker = "\n💬 Sinopsis:\n"
-        ending = "\n\n👇 Tap episode untuk menonton."
-        prefix = "\n".join(lines[:16]) + marker
-        remaining = max(0, 1024 - len(prefix) - len(ending))
-        shortened = overview[:remaining].rstrip()
-        if len(shortened) < len(overview):
-            shortened = shortened.rstrip(" .") + "…"
-        caption = prefix + shortened + ending
-    return caption[:1024]
+
+    # Caption foto Telegram maksimal 1024 karakter. Jika episode sangat banyak,
+    # tampilkan sebanyak yang muat tanpa memotong tag HTML di tengah.
+    if len(caption) <= 1024:
+        return caption
+
+    compact = [f"<b>{title} ({year})</b>", ""]
+    ending = "\n\n👇 <b>Tap episode untuk menonton</b>"
+    for line in lines[2:-2]:
+        candidate = "\n".join(compact + [line]) + ending
+        if len(candidate) > 1024:
+            break
+        compact.append(line)
+    compact.append("…")
+    return ("\n".join(compact) + ending)[:1024]
 
 
 def telegram_post(
@@ -1130,11 +1116,10 @@ def create_or_update_series_index(
     data: dict[str, Any],
     episode_message_id: int,
 ) -> int:
-    """Buat ulang posting indeks serial dan hapus posting indeks sebelumnya.
+    """Kirim katalog poster terbaru dan hapus katalog serial sebelumnya.
 
-    Setiap episode baru akan menghasilkan posting indeks terbaru berisi metadata
-    TMDB dan tombol seluruh episode. Setelah posting baru berhasil dibuat,
-    posting indeks lama dihapus agar channel tetap rapi.
+    Katalog berisi judul, tahun, serta tautan teks seluruh episode seperti contoh
+    Telegram. Video episode tetap berada sebagai pesan tersendiri.
     """
     metadata = data["metadata"]
     episode_number = int(data.get("episode_number") or 0)
@@ -1204,16 +1189,12 @@ def create_or_update_series_index(
             series[field] = value
 
     caption = build_series_index_caption(series)
-    reply_markup = json.dumps(
-        {"inline_keyboard": build_episode_keyboard(series["episodes"])},
-        ensure_ascii=False,
-    )
     previous_index_id = int(series.get("index_message_id") or 0)
 
     payload: dict[str, Any] = {
         "chat_id": target_chat_id,
         "caption": caption,
-        "reply_markup": reply_markup,
+        "parse_mode": "HTML",
     }
     if thread_id > 0:
         payload["message_thread_id"] = str(thread_id)
@@ -1267,7 +1248,7 @@ PANEL_HTML = r"""
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>CineDrive Studio v11.3 Multi-Bot Cluster</title>
+<title>CineDrive Studio v12.2 Episode Catalog</title>
 
 <style>
 :root{
@@ -1348,7 +1329,7 @@ button:active{transform:translateY(0) scale(.995)}
 }
 
 
-.app-nav{position:sticky;top:0;z-index:50;width:min(1100px,94%);margin:0 auto 14px;padding:10px;background:rgba(8,11,22,.92);border:1px solid var(--line);border-radius:0 0 18px 18px;backdrop-filter:blur(16px);box-shadow:0 12px 35px rgba(0,0,0,.30);display:grid;grid-template-columns:repeat(5,1fr);gap:8px}
+.app-nav{position:sticky;top:0;z-index:50;width:min(1100px,94%);margin:0 auto 14px;padding:10px;background:rgba(8,11,22,.92);border:1px solid var(--line);border-radius:0 0 18px 18px;backdrop-filter:blur(16px);box-shadow:0 12px 35px rgba(0,0,0,.30);display:grid;grid-template-columns:repeat(6,1fr);gap:8px}
 .app-nav button{margin:0;padding:11px 8px;min-height:48px;background:rgba(20,25,47,.72);border:1px solid var(--line);box-shadow:none;font-size:13px}
 .app-nav button.active,.app-nav button:hover{background:linear-gradient(135deg,var(--accent),rgba(6,182,212,.82));border-color:transparent}
 .page-section{display:none;animation:menuFade .22s ease}
@@ -1358,7 +1339,7 @@ button:active{transform:translateY(0) scale(.995)}
 @media(max-width:700px){
  body{padding-bottom:82px}
  .wrap{margin-top:14px}
- .app-nav{position:fixed;top:auto;bottom:0;left:0;right:0;width:100%;margin:0;padding:8px 8px calc(8px + env(safe-area-inset-bottom));border-radius:18px 18px 0 0;grid-template-columns:repeat(5,1fr)}
+ .app-nav{position:fixed;top:auto;bottom:0;left:0;right:0;width:100%;margin:0;padding:8px 8px calc(8px + env(safe-area-inset-bottom));border-radius:18px 18px 0 0;grid-template-columns:repeat(6,1fr)}
  .app-nav button{padding:8px 4px;min-height:56px;font-size:12px;border-radius:12px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px}
  .app-nav .nav-icon{font-size:19px;line-height:1}
  .mobile-nav-label{font-size:10px}
@@ -1369,6 +1350,7 @@ button:active{transform:translateY(0) scale(.995)}
 .scan-series-card form{margin:0}.episode-chips{display:flex;flex-wrap:wrap;gap:6px;margin:10px 0}.episode-chips span{padding:5px 8px;border-radius:999px;background:rgba(139,92,246,.18);border:1px solid rgba(139,92,246,.35);font-size:12px}.soft-line{border:0;border-top:1px solid var(--line);margin:20px 0}
 
 .data-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin:14px 0}.data-stat{padding:15px;border:1px solid var(--line);border-radius:15px;background:rgba(8,12,28,.56)}.data-stat b{display:block;font-size:24px;margin-top:5px}.action-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px}.action-grid form{margin:0}.action-grid button{margin-top:0}.danger{background:linear-gradient(135deg,#be123c,#ef4444)!important}.json-box{max-height:520px;overflow:auto;white-space:pre-wrap;word-break:break-word;background:#050814;border:1px solid var(--line);border-radius:14px;padding:14px;font:12px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace}.backup-row{display:grid;grid-template-columns:1fr auto auto;gap:8px;align-items:center;padding:10px 0;border-bottom:1px solid var(--line)}.backup-row form{margin:0}.backup-row button{margin:0;padding:9px 12px}.watermark-note{padding:12px 14px;margin:10px 0;border-radius:13px;background:rgba(6,182,212,.08);border:1px solid rgba(6,182,212,.25);color:var(--muted);font-size:13px;line-height:1.5}.notice{padding:12px 14px;border:1px solid rgba(52,211,153,.35);background:rgba(52,211,153,.08);border-radius:13px;margin:12px 0}
+.status-toolbar{display:grid;grid-template-columns:1fr auto;gap:10px;align-items:center;margin:12px 0}.status-toolbar button{margin:0;width:auto;padding:10px 15px}.status-summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:10px;margin:14px 0}.status-stat{padding:13px;border:1px solid var(--line);border-radius:14px;background:rgba(8,12,28,.56)}.status-stat b{display:block;font-size:23px;margin-top:4px}.status-job{border:1px solid var(--line);border-radius:17px;padding:15px;margin:12px 0;background:rgba(8,12,28,.58)}.status-meta{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:5px 14px;margin-top:10px}.status-badge{display:inline-block;padding:5px 9px;border-radius:999px;font-size:12px;font-weight:900;letter-spacing:.05em;background:rgba(255,255,255,.06)}.status-empty{text-align:center;padding:30px 15px;border:1px dashed var(--line);border-radius:16px}.status-updated{font-size:12px;color:var(--muted)}
 </style>
 </head>
 <body>
@@ -1376,12 +1358,13 @@ button:active{transform:translateY(0) scale(.995)}
   <button type="button" data-page-target="searchSection"><span class="nav-icon">🔍</span><span class="mobile-nav-label">Film</span></button>
   <button type="button" data-page-target="serialSection"><span class="nav-icon">📺</span><span class="mobile-nav-label">Serial</span></button>
   <button type="button" data-page-target="queueSection"><span class="nav-icon">⏳</span><span class="mobile-nav-label">Antrean</span></button>
+  <button type="button" data-page-target="statusSection"><span class="nav-icon">📊</span><span class="mobile-nav-label">Status</span></button>
   <button type="button" data-page-target="dataSection"><span class="nav-icon">🗄️</span><span class="mobile-nav-label">Data</span></button>
   <button type="button" data-page-target="homeSection"><span class="nav-icon">🏠</span><span class="mobile-nav-label">Info</span></button>
 </nav>
 <div class="wrap">
   <div class="card page-section" id="homeSection">
-    <h1>🎬 CineDrive Studio v11.3 Multi-Bot Cluster</h1>
+    <h1>🎬 CineDrive Studio v12.2 Episode Catalog</h1>
     <p class="muted">Pilih menu di navigasi untuk mencari film, mengelola serial, atau melihat antrean tanpa perlu menggulir halaman panjang.</p>
     <div class="batch-help"><strong>Status penyimpanan:</strong> {% if storage.persistent %}<span class="SUCCESS">Permanen</span>{% else %}<span class="ERROR">Sementara</span>{% endif %}<br><span class="muted">Serial: {{ storage.series_path }}<br>Topic: {{ storage.topic_path }}<br>Backup: {{ storage.backup_dir }}</span>{% if storage.warning %}<p class="error">{{ storage.warning }}</p>{% endif %}</div>
   </div>
@@ -1771,6 +1754,13 @@ button:active{transform:translateY(0) scale(.995)}
   </div>
 
 
+  <div class="card page-section" id="statusSection">
+    <div class="row"><div><h2 style="margin:0">📊 Status Proses Global</h2><div class="muted">Memantau pekerjaan dari seluruh Railway dan bot Telegram.</div></div><span id="statusUpdated" class="status-updated">Belum diperbarui</span></div>
+    <div class="status-toolbar"><select id="statusFilter"><option value="active">Sedang diproses</option><option value="all">Semua pekerjaan</option><option value="failed">Gagal</option><option value="success">Selesai</option></select><button type="button" id="statusRefreshButton">Refresh</button></div>
+    <div id="statusSummary" class="status-summary"></div>
+    <div id="globalJobs"><p class="muted">Memuat status global...</p></div>
+  </div>
+
   <div class="card page-section" id="dataSection">
     <h2>🗄️ Manajemen Data Railway Volume</h2>
     <p class="muted">Lihat, unduh, backup, pulihkan, dan pindahkan data JSON yang tersimpan di volume permanen.</p>
@@ -1817,6 +1807,7 @@ function openMainPage(id, updateHash=true){
   if(updateHash) history.replaceState(null, "", `#${target}`);
   window.scrollTo({top:0, behavior:"instant"});
   if(target === "queueSection") refreshJobs();
+  if(target === "statusSection") refreshGlobalStatus();
 }
 pageButtons.forEach(button => button.addEventListener("click", () => openMainPage(button.dataset.pageTarget)));
 const hashPage = location.hash.replace("#", "");
@@ -1869,6 +1860,33 @@ async function refreshJobs(){
  }catch(e){box.innerHTML=`<p class="error">${esc(e)}</p>`}
 }
 
+const schedulerDashboardUrl={{ scheduler_dashboard_url|tojson }};
+const activeGlobalStates=new Set(["QUEUED","ASSIGNED","CLAIMED","DOWNLOADING","PROCESSING","UPLOADING"]);
+function fmtDuration(seconds){seconds=Math.max(0,Number(seconds||0));const h=Math.floor(seconds/3600),m=Math.floor((seconds%3600)/60),sec=Math.floor(seconds%60);return h?`${h}j ${m}m`:m?`${m}m ${sec}d`:`${sec}d`}
+async function refreshGlobalStatus(){
+ const box=document.getElementById("globalJobs"),summary=document.getElementById("statusSummary"),updated=document.getElementById("statusUpdated");
+ if(!box)return;
+ try{
+  const r=await fetch(schedulerDashboardUrl,{cache:"no-store"}),d=await r.json();
+  if(!d.success){box.innerHTML=`<p class="error">${esc(d.error||"Gagal mengambil status")}</p>`;return}
+  const filter=document.getElementById("statusFilter")?.value||"active";
+  let rows=Array.isArray(d.jobs)?d.jobs:[];
+  if(filter==="active")rows=rows.filter(j=>activeGlobalStates.has(String(j.state)));
+  if(filter==="failed")rows=rows.filter(j=>String(j.state)==="ERROR");
+  if(filter==="success")rows=rows.filter(j=>String(j.state)==="SUCCESS");
+  summary.innerHTML=`<div class="status-stat"><span class="muted">Aktif</span><b>${esc(d.active_count)}</b></div><div class="status-stat"><span class="muted">Menunggu</span><b>${esc(d.queued_count)}</b></div><div class="status-stat"><span class="muted">Selesai</span><b>${esc(d.success_count)}</b></div><div class="status-stat"><span class="muted">Gagal</span><b>${esc(d.error_count)}</b></div><div class="status-stat"><span class="muted">Worker</span><b>${esc(d.worker_count)}</b></div>`;
+  updated.textContent=`Diperbarui ${new Date().toLocaleTimeString()}`;
+  if(!rows.length){box.innerHTML=`<div class="status-empty"><strong>Tidak ada pekerjaan pada filter ini.</strong><div class="muted">Status akan muncul otomatis ketika ada proses baru.</div></div>`;return}
+  box.innerHTML=rows.map(j=>{
+   const pct=Math.max(0,Math.min(100,Number(j.overall_progress||j.progress||0)));
+   const started=Number(j.started_at||j.created_at||0);const finished=Number(j.finished_at||0);const duration=started?fmtDuration((finished||Date.now()/1000)-started):"-";
+   return `<div class="status-job"><div class="row"><div><strong>${esc(j.title||j.job_id||"Pekerjaan")}</strong>${j.episode_number?`<div class="muted">Season ${esc(j.season_number||1)} · Episode ${esc(j.episode_number)}</div>`:""}</div><span class="status-badge ${esc(j.state)}">${esc(j.state||"UNKNOWN")}</span></div><div class="progress"><div style="width:${pct}%"></div></div><div class="muted">Progres ${pct.toFixed(1)}%${j.eta_human&&j.eta_human!=="-"?` · ETA ${esc(j.eta_human)}`:""}</div><div class="status-meta"><div class="muted">Worker: <strong>${esc(j.assigned_worker||j.worker_id||"-")}</strong></div><div class="muted">Bot: <strong>${esc(j.bot_username||j.bot_name||"-")}</strong></div><div class="muted">Durasi: <strong>${esc(duration)}</strong></div><div class="muted">Pengirim: <strong>${esc(j.submitted_by||"-")}</strong></div><div class="muted">Topic: <strong>${esc(j.topic_name||"General")}</strong></div><div class="muted">Detail: <strong>${esc(j.progress_detail||j.message||"-")}</strong></div></div>${j.error?`<p class="error">${esc(j.error)}</p>`:""}</div>`;
+  }).join("");
+ }catch(e){box.innerHTML=`<p class="error">${esc(e)}</p>`}
+}
+document.getElementById("statusRefreshButton")?.addEventListener("click",refreshGlobalStatus);
+document.getElementById("statusFilter")?.addEventListener("change",refreshGlobalStatus);
+
 const seriesSearch = document.getElementById("seriesSearch");
 if (seriesSearch) {
   seriesSearch.addEventListener("input", () => {
@@ -1904,7 +1922,7 @@ function selectSeries(card) {
   });
 }
 
-refreshJobs();setInterval(refreshJobs,3000);
+refreshJobs();refreshGlobalStatus();setInterval(refreshJobs,3000);setInterval(()=>{if(document.getElementById("statusSection")?.classList.contains("active"))refreshGlobalStatus()},3000);
 </script>
 </body>
 </html>
@@ -3593,6 +3611,42 @@ def global_database_converge():
     })
 
 
+@app.get("/scheduler-dashboard-data")
+def scheduler_dashboard_data():
+    if not authorized():
+        return jsonify({"success": False, "error": "Unauthorized"}), 401
+    local = get_jobs_snapshot()
+    shared = cluster_store.enterprise_jobs() if cluster_store.enabled else []
+    merged: dict[str, dict[str, Any]] = {}
+    for item in shared + local:
+        if not isinstance(item, dict):
+            continue
+        job_id = str(item.get("id") or item.get("job_id") or "")
+        if not job_id:
+            continue
+        previous = merged.get(job_id) or {}
+        # Prefer the record with the newest timestamps/progress, while preserving useful fields.
+        candidate = dict(previous)
+        candidate.update({k: v for k, v in item.items() if v not in (None, "")})
+        merged[job_id] = candidate
+    rows = list(merged.values())
+    rows.sort(key=lambda x: float(x.get("finished_at") or x.get("started_at") or x.get("created_at") or x.get("updated_at") or 0), reverse=True)
+    active_states = {"QUEUED", "ASSIGNED", "CLAIMED", "DOWNLOADING", "PROCESSING", "UPLOADING"}
+    for item in rows:
+        item.setdefault("job_id", item.get("id"))
+        item.setdefault("assigned_worker", item.get("worker_id"))
+        item.setdefault("bot_username", (item.get("bot_identity") or {}).get("username") if isinstance(item.get("bot_identity"), dict) else "")
+    return jsonify({
+        "success": True, "version": CLUSTER_VERSION, "namespace": cluster_store.namespace,
+        "worker_id": cluster_store.worker_id, "worker_count": len(_scheduler_worker_ids()),
+        "active_count": sum(1 for x in rows if str(x.get("state")) in active_states),
+        "queued_count": sum(1 for x in rows if str(x.get("state")) in {"QUEUED", "ASSIGNED", "CLAIMED"}),
+        "success_count": sum(1 for x in rows if str(x.get("state")) == "SUCCESS"),
+        "error_count": sum(1 for x in rows if str(x.get("state")) == "ERROR"),
+        "jobs": rows[:100], "last_error": cluster_store.last_error,
+    })
+
+
 @app.get("/scheduler-status")
 def scheduler_status():
     shared = cluster_store.enterprise_jobs() if cluster_store.enabled else []
@@ -3695,6 +3749,7 @@ def panel():
         default_chat_id=CHANNEL_ID,
         scan_url=url_for("scan_topics", key=key),
         status_url=url_for("api_jobs", key=key),
+        scheduler_dashboard_url=url_for("scheduler_dashboard_data", key=key),
         max_queue=MAX_QUEUE,
         topic_options=get_topic_options(),
         scan_message=request.args.get("scan_message", ""),

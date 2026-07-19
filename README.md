@@ -1,79 +1,52 @@
-# CineDrive v11.5 Enterprise Cluster
+# CineDrive v12.2 Episode Catalog
 
-Versi ini melanjutkan Global Database v11.4 dan menambahkan koordinasi lintas Railway.
+Versi ini mempertahankan seluruh fitur CineDrive v12.1 dan mengubah posting katalog serial agar menyerupai contoh katalog Telegram.
 
-## Fitur utama
+## Format katalog serial
 
-- Supabase tetap menjadi sumber utama data serial, episode, topic, dan scan.
-- Distributed lock mencegah episode/konten yang sama diproses bersamaan oleh dua Railway.
-- Status pekerjaan dipublikasikan ke Supabase agar dapat dilihat dari semua worker.
-- Setiap worker memakai `CLUSTER_WORKER_ID` berbeda dan dapat memakai bot Telegram berbeda.
-- Endpoint `/enterprise-status` menampilkan worker, bot aktif, pekerjaan lokal, dan pekerjaan bersama.
-- Heartbeat, Global Database, Smart Watermark, H.265 Turbo, TMDB, dan format katalog serial tetap dipertahankan.
+Setiap episode baru akan menghasilkan satu posting katalog terbaru:
 
-## Variabel yang sama di semua Railway
+- poster serial;
+- judul dan tahun;
+- daftar episode berupa tautan teks yang bisa diketuk;
+- maksimal 5 episode per baris;
+- tulisan **Tap episode untuk menonton**.
 
-```env
-SUPABASE_URL=https://PROJECT.supabase.co
-SUPABASE_SERVICE_ROLE_KEY=...
-CLUSTER_NAMESPACE=cinemaxx1-production
-CHANNEL_ID=-100xxxxxxxxxx
-GLOBAL_SYNC_ENABLED=1
-GLOBAL_SYNC_BOOTSTRAP_LOCAL=0
-GLOBAL_DATABASE_PUBLISH_LOCAL=0
-ENTERPRISE_CLUSTER_ENABLED=1
-ENTERPRISE_LOCK_TTL_SECONDS=21600
-```
-
-## Variabel yang harus berbeda
-
-Railway pertama:
-
-```env
-CLUSTER_WORKER_ID=railway-1
-BOT_TOKEN=TOKEN_BOT_1
-```
-
-Railway kedua:
-
-```env
-CLUSTER_WORKER_ID=railway-2
-BOT_TOKEN=TOKEN_BOT_2
-```
-
-## Pemeriksaan
-
-Buka:
-
-- `/global-sync-status`
-- `/cluster-status`
-- `/bot-status`
-- `/enterprise-status`
-
-`/enterprise-status` seharusnya menampilkan `version: 11.5.0` dan `enterprise_cluster_enabled: true`.
-
-## Catatan pembagian beban
-
-Pekerjaan diproses oleh Railway tempat pengguna menambahkannya. Distributed lock mencegah duplikasi lintas worker. Status pekerjaan dibagikan secara global, tetapi versi ini tidak memindahkan file upload atau direktori kerja secara otomatis dari satu Railway ke Railway lain.
-
-## CineDrive v12 — Enterprise Scheduler
-
-Versi v12 menambahkan pembagian pekerjaan otomatis antar worker Railway yang aktif.
-Pekerjaan yang sumbernya sepenuhnya dari Google Drive dapat dijadwalkan ke worker dengan beban paling rendah. Pekerjaan yang memakai file upload lokal, seperti subtitle upload atau logo watermark upload, tetap diproses oleh Railway tempat file tersebut diunggah karena file lokal tidak tersedia di worker lain.
-
-Variabel:
-
-```env
-SCHEDULER_ENABLED=1
-SCHEDULER_POLL_SECONDS=5
-SCHEDULER_MAX_JOBS_PER_WORKER=1
-SCHEDULER_CLAIM_TTL_SECONDS=21600
-```
-
-Status scheduler:
+Contoh:
 
 ```text
-/scheduler-status
+Tobat Jatuh Cinta (2026)
+
+➡️ E.01 | E.02 | E.03 | E.04 | E.05
+➡️ E.06 | E.07 | E.08 | E.09 | E.10
+
+👇 Tap episode untuk menonton
 ```
 
-Untuk semua Railway, gunakan `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `CLUSTER_NAMESPACE`, dan `CHANNEL_ID` yang sama. Gunakan `CLUSTER_WORKER_ID` berbeda pada setiap Railway.
+## Saat episode baru ditambahkan
+
+1. Video episode baru dikirim ke Telegram.
+2. CineDrive membuat katalog baru yang berisi seluruh episode lama dan episode terbaru.
+3. Katalog lama dihapus setelah katalog baru berhasil dibuat.
+4. Video episode lama tidak dihapus.
+
+Semua tautan episode mengarah langsung ke pesan video masing-masing.
+
+## Persyaratan bot Telegram
+
+Semua bot yang digunakan harus menjadi administrator di channel atau supergroup tujuan dan memiliki izin:
+
+- Post Messages;
+- Delete Messages.
+
+Untuk multi-bot, penghapusan katalog lama dicoba menggunakan seluruh token bot yang dikonfigurasi.
+
+## Deploy
+
+1. Upload semua file dari ZIP ke repository.
+2. Gunakan source yang sama pada seluruh Railway.
+3. Jalankan kembali `supabase_setup.sql` bila belum pernah dijalankan.
+4. Redeploy seluruh service Railway.
+5. Tambahkan satu episode baru untuk membuat katalog dengan format baru.
+
+Versi aplikasi: `12.2.0`.
