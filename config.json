@@ -31,7 +31,11 @@
     "auto_cleanup": true,
     "success_retention_seconds": 604800,
     "error_retention_seconds": 86400,
-    "upload_retries": 3
+    "upload_retries": 3,
+    "failover_enabled": true,
+    "worker_offline_seconds": 90,
+    "failover_grace_seconds": 30,
+    "failover_processing_jobs": true
   },
   "cluster": {
     "enabled": true,
@@ -42,5 +46,13 @@
     "bootstrap_local": false,
     "publish_local": false,
     "refresh_seconds": 5
+  },
+  "smart_catalog": {
+    "enabled": true,
+    "new_poster_per_episode": true,
+    "e01_full_tmdb_details": true,
+    "e02plus_compact": true,
+    "delete_previous_after_success": true,
+    "clickable_episode_links": true
   }
 }

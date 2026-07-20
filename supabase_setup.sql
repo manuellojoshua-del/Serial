@@ -82,3 +82,7 @@ on public.cinedrive_cluster(namespace, bucket, item_key);
 create index if not exists cinedrive_cluster_record_updated_idx
 on public.cinedrive_cluster(namespace, record_type, updated_at desc);
 notify pgrst, 'reload schema';
+
+-- CineDrive v16 Smart Catalog uses record_type='lock' with keys prefixed
+-- smart-catalog: and stores catalog metadata inside the canonical 'series'
+-- document. No additional table or column is required.

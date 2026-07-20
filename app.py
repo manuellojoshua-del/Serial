@@ -64,6 +64,10 @@ _CONFIG_KEY_MAP = {
     "scheduler.success_retention_seconds": "V15_SUCCESS_RETENTION_SECONDS",
     "scheduler.error_retention_seconds": "V15_ERROR_RETENTION_SECONDS",
     "scheduler.upload_retries": "V15_UPLOAD_RETRIES",
+    "scheduler.failover_enabled": "V161_FAILOVER_ENABLED",
+    "scheduler.worker_offline_seconds": "V161_WORKER_OFFLINE_SECONDS",
+    "scheduler.failover_grace_seconds": "V161_FAILOVER_GRACE_SECONDS",
+    "scheduler.failover_processing_jobs": "V161_FAILOVER_PROCESSING_JOBS",
     "cluster.enabled": "ENTERPRISE_CLUSTER_ENABLED",
     "cluster.lock_ttl_seconds": "ENTERPRISE_LOCK_TTL_SECONDS",
     "global_database.enabled": "GLOBAL_SYNC_ENABLED",
@@ -227,7 +231,7 @@ EPISODE_BUTTONS_PER_ROW = max(
 )
 
 
-CLUSTER_VERSION = "15.4.0"
+CLUSTER_VERSION = "16.1.0"
 
 
 def _deep_merge_cluster(remote: Any, local: Any) -> Any:
@@ -266,6 +270,12 @@ V15_ERROR_RETENTION_SECONDS = max(1800, int(os.getenv("V15_ERROR_RETENTION_SECON
 V15_UPLOAD_RETRIES = max(1, min(5, int(os.getenv("V15_UPLOAD_RETRIES", "3") or "3")))
 V15_CLEANUP_INTERVAL_SECONDS = max(60, int(os.getenv("V15_CLEANUP_INTERVAL_SECONDS", "300") or "300"))
 V15_EVENT_WAKE_SECONDS = max(1, int(os.getenv("V15_EVENT_WAKE_SECONDS", "2") or "2"))
+# CineDrive v16.1 Enterprise Automatic Failover
+V161_FAILOVER_ENABLED = os.getenv("V161_FAILOVER_ENABLED", "1").strip().lower() in {"1", "true", "yes", "on"}
+V161_WORKER_OFFLINE_SECONDS = max(60, int(os.getenv("V161_WORKER_OFFLINE_SECONDS", os.getenv("WORKER_OFFLINE_SECONDS", "90")) or "90"))
+V161_FAILOVER_GRACE_SECONDS = max(15, int(os.getenv("V161_FAILOVER_GRACE_SECONDS", "30") or "30"))
+V161_FAILOVER_PROCESSING_JOBS = os.getenv("V161_FAILOVER_PROCESSING_JOBS", "1").strip().lower() in {"1", "true", "yes", "on"}
+V161_FAILOVER_STATES = {"ASSIGNED", "CLAIMED", "DOWNLOADING", "PROCESSING", "PREPARING", "READY", "UPLOADING"}
 SCHEDULER_WAKE_EVENT = threading.Event()
 
 # CineDrive v13 Enterprise
@@ -1209,50 +1219,95 @@ def build_episode_keyboard(
         rows.append(row)
     return rows
 
-def build_series_index_caption(
-    series: dict[str, Any],
-) -> str:
-    """Buat katalog episode seperti contoh Telegram: judul + link episode per baris.
-
-    Setiap episode ditampilkan sebagai tautan teks yang dapat diketuk. Katalog baru
-    dikirim setiap kali episode bertambah, lalu katalog sebelumnya dihapus.
-    """
-    title = html.escape(str(series.get("series_title") or "Serial"))
-    year = html.escape(str(series.get("year") or "-"))
-    episodes = series.get("episodes") or {}
+def _catalog_episode_lines(series: dict[str, Any]) -> list[str]:
+    """Build clickable episode rows for the Smart Catalog photo caption."""
+    episodes = series.get("episodes") if isinstance(series.get("episodes"), dict) else {}
     ordered = sorted(episodes, key=lambda value: int(value))
-
-    lines = [f"<b>{title} ({year})</b>", ""]
     per_row = max(1, min(5, EPISODE_BUTTONS_PER_ROW))
+    rows: list[str] = []
     for start in range(0, len(ordered), per_row):
-        row_items: list[str] = []
+        links: list[str] = []
         for episode_key in ordered[start:start + per_row]:
             episode = episodes.get(episode_key) or {}
             url = html.escape(str(episode.get("url") or ""), quote=True)
             label = f"E.{int(episode_key):02d}"
-            if url:
-                row_items.append(f'<a href="{url}">{label}</a>')
-            else:
-                row_items.append(label)
-        lines.append("➡️ " + " | ".join(row_items))
+            links.append(f'<a href="{url}">{label}</a>' if url else label)
+        rows.append("➡️ " + " | ".join(links))
+    return rows
 
-    lines.extend(["", "👇 <b>Tap episode untuk menonton</b>"])
+
+def _catalog_list(value: Any) -> str:
+    if not isinstance(value, list):
+        return "-"
+    clean = [html.escape(str(item).lstrip("#").strip()) for item in value if str(item).strip()]
+    return ", ".join(clean) or "-"
+
+
+def build_series_index_caption(series: dict[str, Any]) -> str:
+    """Build CineDrive v16 Smart Catalog caption.
+
+    E01 contains title/year and TMDB details. Starting from E02, every refresh
+    creates a compact new poster catalog containing only the watch instruction
+    and all clickable episode links, exactly in upload order.
+    """
+    episodes = series.get("episodes") if isinstance(series.get("episodes"), dict) else {}
+    episode_rows = _catalog_episode_lines(series)
+    episode_count = len(episodes)
+
+    if episode_count <= 1:
+        title = html.escape(str(series.get("series_title") or "Serial"))
+        year = html.escape(str(series.get("year") or "-"))
+        rating = float(series.get("vote_average") or 0)
+        votes = int(series.get("vote_count") or 0)
+        release_date = html.escape(str(series.get("release_date") or "-"))
+        certification = html.escape(str(series.get("certification") or "-"))
+        overview = html.escape(str(series.get("overview") or "Sinopsis belum tersedia.").strip())
+        lines = [
+            f"<b>{title} ({year})</b>", "",
+            f"⭐ Peringkat: {rating:.1f}/10 ({votes} suara)",
+            f"🎭 Genre: {_catalog_list(series.get('genres'))}",
+            f"📅 Rilis: {release_date}",
+            f"🔞 Kategori: {certification}",
+            f"🌍 Negara: {_catalog_list(series.get('countries'))}",
+            f"🗣 Bahasa: {_catalog_list(series.get('languages'))}", "",
+            "💬 <b>Sinopsis:</b>", overview, "",
+            "👇 <b>Tap episode untuk menonton</b>",
+            *episode_rows,
+        ]
+    else:
+        lines = [
+            "👇 <b>Tap episode untuk menonton</b>",
+            *episode_rows,
+        ]
+
     caption = "\n".join(lines)
-
-    # Caption foto Telegram maksimal 1024 karakter. Jika episode sangat banyak,
-    # tampilkan sebanyak yang muat tanpa memotong tag HTML di tengah.
     if len(caption) <= 1024:
         return caption
 
-    compact = [f"<b>{title} ({year})</b>", ""]
-    ending = "\n\n👇 <b>Tap episode untuk menonton</b>"
-    for line in lines[2:-2]:
-        candidate = "\n".join(compact + [line]) + ending
+    # E01 may have a long TMDB overview. Shorten only the overview while keeping
+    # complete HTML tags and all available episode links intact.
+    if episode_count <= 1:
+        fixed_tail = "\n\n👇 <b>Tap episode untuk menonton</b>\n" + "\n".join(episode_rows)
+        prefix_lines = lines[:10]  # through the Sinopsis heading
+        prefix = "\n".join(prefix_lines) + "\n"
+        available = max(0, 1024 - len(prefix) - len(fixed_tail) - 1)
+        short_overview = overview[:available].rstrip()
+        if len(short_overview) < len(overview) and available >= 1:
+            short_overview = short_overview[:-1].rstrip() + "…"
+        return (prefix + short_overview + fixed_tail)[:1024]
+
+    # Compact catalogs normally fit hundreds of episodes. If Telegram's photo
+    # caption limit is reached, retain the newest complete rows without cutting
+    # HTML anchors in the middle.
+    compact = ["👇 <b>Tap episode untuk menonton</b>"]
+    for row in reversed(episode_rows):
+        candidate = "\n".join([compact[0], row] + compact[1:])
         if len(candidate) > 1024:
             break
-        compact.append(line)
-    compact.append("…")
-    return ("\n".join(compact) + ending)[:1024]
+        compact.insert(1, row)
+    if len(compact) - 1 < len(episode_rows):
+        compact.insert(1, "…")
+    return "\n".join(compact)
 
 
 def telegram_post(
@@ -1289,124 +1344,100 @@ def create_or_update_series_index(
     data: dict[str, Any],
     episode_message_id: int,
 ) -> int:
-    """Pertahankan satu posting katalog untuk setiap serial.
+    """Create a fresh Smart Catalog poster and then delete the previous catalog.
 
-    Episode pertama membuat posting poster katalog. Episode berikutnya hanya
-    mengedit caption/teks posting yang sama sehingga daftar tautan berubah dari
-    E.01 menjadi E.01 | E.02 | E.03 tanpa membuat poster baru. Jika katalog lama
-    dibuat oleh bot lain dan tidak dapat diedit, aplikasi membuat katalog baru
-    sebagai fallback lalu mencoba menghapus katalog lama.
+    The operation is protected by a Supabase lock per serial/season/topic so two
+    Railway workers cannot publish competing catalogs. The old catalog is never
+    deleted until Telegram confirms the new poster was created successfully.
     """
     metadata = data["metadata"]
     episode_number = int(data.get("episode_number") or 0)
-
     if not metadata.get("episode_code") or episode_number < 1:
         return 0
 
     target_chat_id = str(data.get("target_chat_id") or CHANNEL_ID)
     thread_id = int(data.get("message_thread_id") or 0)
     key = series_store_key(data)
-    store = load_series_store()
-    series = store.get(key) or {
-        "tmdb_id": int(data.get("tmdb_id") or 0),
-        "series_title": metadata.get("series_title"),
-        "original_title": metadata.get("original_title"),
-        "year": metadata.get("year"),
-        "season_number": int(data.get("season_number") or 1),
-        "target_chat_id": target_chat_id,
-        "message_thread_id": thread_id,
-        "topic_name": data.get("topic_name"),
-        "poster_url": metadata.get("poster_url"),
-        "vote_average": metadata.get("vote_average"),
-        "vote_count": metadata.get("vote_count"),
-        "release_date": metadata.get("release_date"),
-        "certification": metadata.get("certification"),
-        "genres": metadata.get("genres") or [],
-        "countries": metadata.get("countries") or [],
-        "languages": metadata.get("languages") or [],
-        "directors": metadata.get("directors") or [],
-        "writers": metadata.get("writers") or [],
-        "cast": metadata.get("cast") or [],
-        "overview": metadata.get("overview"),
-        "index_message_id": 0,
-        "index_type": "",
-        "episodes": {},
-    }
+    lock_key = f"smart-catalog:{key}"
+    acquired = False
+    lock_info: dict[str, Any] = {}
 
-    series.setdefault("episodes", {})
-    series["episodes"][str(episode_number)] = {
-        "message_id": episode_message_id,
-        "url": telegram_message_url(target_chat_id, episode_message_id),
-        "title": metadata.get("episode_title"),
-        "episode_code": metadata.get("episode_code"),
-        "overview": metadata.get("overview"),
-        "release_date": metadata.get("release_date"),
-        "vote_average": metadata.get("vote_average"),
-        "updated_at": now_ts(),
-        "uploaded_by_worker": cluster_store.worker_id,
-        "uploaded_by_bot_id": int(ACTIVE_BOT.get("id") or 0),
-        "uploaded_by_bot_username": str(ACTIVE_BOT.get("username") or ""),
-    }
+    # Brief retries handle E01/E02 completing on different workers at nearly the
+    # same time without losing the newly uploaded episode from the canonical map.
+    for _ in range(15):
+        acquired, lock_info = cluster_store.acquire_lock(
+            lock_key,
+            {"episode": episode_number, "chat_id": target_chat_id, "thread_id": thread_id},
+        )
+        if acquired:
+            break
+        time.sleep(2)
+    if not acquired:
+        raise RuntimeError(
+            f"Smart Catalog sedang diproses worker {lock_info.get('owner') or 'lain'}."
+        )
 
-    for field, fallback in (
-        ("series_title", series.get("series_title")),
-        ("original_title", series.get("original_title")),
-        ("year", series.get("year")),
-        ("poster_url", series.get("poster_url")),
-        ("overview", series.get("overview")),
-    ):
-        series[field] = metadata.get(field) or fallback
-    for field in (
-        "vote_average", "vote_count", "release_date", "certification",
-        "genres", "countries", "languages", "directors", "writers", "cast",
-    ):
-        value = metadata.get(field)
-        if value not in (None, "", []):
-            series[field] = value
+    try:
+        store = load_series_store()
+        series = store.get(key) or {
+            "tmdb_id": int(data.get("tmdb_id") or 0),
+            "series_title": metadata.get("series_title"),
+            "original_title": metadata.get("original_title"),
+            "year": metadata.get("year"),
+            "season_number": int(data.get("season_number") or 1),
+            "target_chat_id": target_chat_id,
+            "message_thread_id": thread_id,
+            "topic_name": data.get("topic_name"),
+            "poster_url": metadata.get("poster_url"),
+            "vote_average": metadata.get("vote_average"),
+            "vote_count": metadata.get("vote_count"),
+            "release_date": metadata.get("release_date"),
+            "certification": metadata.get("certification"),
+            "genres": metadata.get("genres") or [],
+            "countries": metadata.get("countries") or [],
+            "languages": metadata.get("languages") or [],
+            "directors": metadata.get("directors") or [],
+            "writers": metadata.get("writers") or [],
+            "cast": metadata.get("cast") or [],
+            "overview": metadata.get("overview"),
+            "index_message_id": 0,
+            "index_type": "",
+            "episodes": {},
+        }
 
-    caption = build_series_index_caption(series)
-    previous_index_id = int(series.get("index_message_id") or 0)
-    previous_type = str(series.get("index_type") or "")
-    edited = False
-    result: dict[str, Any] | None = None
+        series.setdefault("episodes", {})
+        series["episodes"][str(episode_number)] = {
+            "message_id": episode_message_id,
+            "url": telegram_message_url(target_chat_id, episode_message_id),
+            "title": metadata.get("episode_title"),
+            "episode_code": metadata.get("episode_code"),
+            "overview": metadata.get("overview"),
+            "release_date": metadata.get("release_date"),
+            "vote_average": metadata.get("vote_average"),
+            "updated_at": now_ts(),
+            "uploaded_by_worker": cluster_store.worker_id,
+            "uploaded_by_bot_id": int(ACTIVE_BOT.get("id") or 0),
+            "uploaded_by_bot_username": str(ACTIVE_BOT.get("username") or ""),
+        }
 
-    # Jalur utama v14.2: edit posting katalog yang sudah ada. Telegram hanya
-    # mengizinkan bot pembuat pesan mengeditnya, sehingga CATALOG_BOT_TOKEN harus
-    # sama pada seluruh Railway.
-    if previous_index_id > 0:
-        try:
-            if previous_type == "photo":
-                result = telegram_post(
-                    "editMessageCaption",
-                    {
-                        "chat_id": target_chat_id,
-                        "message_id": str(previous_index_id),
-                        "caption": caption,
-                        "parse_mode": "HTML",
-                    },
-                    token=CATALOG_BOT_TOKEN,
-                )
-            else:
-                result = telegram_post(
-                    "editMessageText",
-                    {
-                        "chat_id": target_chat_id,
-                        "message_id": str(previous_index_id),
-                        "text": caption,
-                        "parse_mode": "HTML",
-                        "disable_web_page_preview": "true",
-                    },
-                    token=CATALOG_BOT_TOKEN,
-                )
-            edited = True
-            series["index_message_id"] = previous_index_id
-            series["catalog_edit_mode"] = "edited-existing-message"
-            series.pop("catalog_edit_warning", None)
-        except Exception as exc:
-            series["catalog_edit_warning"] = str(exc)
+        for field, fallback in (
+            ("series_title", series.get("series_title")),
+            ("original_title", series.get("original_title")),
+            ("year", series.get("year")),
+            ("poster_url", series.get("poster_url")),
+            ("overview", series.get("overview")),
+        ):
+            series[field] = metadata.get(field) or fallback
+        for field in (
+            "vote_average", "vote_count", "release_date", "certification",
+            "genres", "countries", "languages", "directors", "writers", "cast",
+        ):
+            value = metadata.get(field)
+            if value not in (None, "", []):
+                series[field] = value
 
-    # Episode pertama, atau fallback ketika katalog lama dibuat bot berbeda.
-    if not edited:
+        previous_index_id = int(series.get("index_message_id") or 0)
+        caption = build_series_index_caption(series)
         payload: dict[str, Any] = {
             "chat_id": target_chat_id,
             "caption": caption,
@@ -1415,21 +1446,32 @@ def create_or_update_series_index(
         if thread_id > 0:
             payload["message_thread_id"] = str(thread_id)
 
-        poster = str(series.get("poster_url") or "")
-        if poster:
-            payload["photo"] = poster
-            result = telegram_post("sendPhoto", payload, token=CATALOG_BOT_TOKEN)
-            series["index_type"] = "photo"
-        else:
-            payload.pop("caption", None)
-            payload["text"] = caption
-            payload["disable_web_page_preview"] = "true"
-            result = telegram_post("sendMessage", payload, token=CATALOG_BOT_TOKEN)
-            series["index_type"] = "text"
-
+        poster = str(series.get("poster_url") or "").strip()
+        if not poster:
+            raise RuntimeError("Poster TMDB tidak tersedia; Smart Catalog membutuhkan poster.")
+        payload["photo"] = poster
+        result = telegram_post("sendPhoto", payload, token=CATALOG_BOT_TOKEN)
         new_index_id = int(result["result"]["message_id"])
+
+        # Persist the new authoritative catalog before cleanup. A crash after this
+        # point can leave an extra old poster, but cannot lose the new catalog.
+        bot_info = result.get("_bot") or {}
+        series["previous_index_message_id"] = previous_index_id
         series["index_message_id"] = new_index_id
-        series["catalog_edit_mode"] = "created-new-message" if previous_index_id <= 0 else "fallback-recreated"
+        series["index_type"] = "photo"
+        series["catalog_publish_mode"] = "new-poster-per-episode"
+        series["catalog_layout"] = "e01-full-e02plus-compact"
+        series["index_bot_id"] = int(bot_info.get("id") or CATALOG_BOT.get("id") or 0)
+        series["index_bot_username"] = str(bot_info.get("username") or CATALOG_BOT.get("username") or "")
+        series["catalog_bot_id"] = int(CATALOG_BOT.get("id") or 0)
+        series["catalog_bot_username"] = str(CATALOG_BOT.get("username") or "")
+        series["catalog_version"] = CLUSTER_VERSION
+        series["updated_at"] = now_ts()
+        series["previous_index_deleted"] = previous_index_id <= 0
+        series.pop("catalog_edit_warning", None)
+        series.pop("delete_warning", None)
+        store[key] = series
+        save_series_store(store, reason="v16-smart-catalog-published")
 
         if previous_index_id > 0 and previous_index_id != new_index_id:
             try:
@@ -1440,21 +1482,18 @@ def create_or_update_series_index(
                     try_all_bots=True,
                 )
                 series["previous_index_deleted"] = True
+                series["previous_index_deleted_at"] = now_ts()
                 series.pop("delete_warning", None)
             except Exception as exc:
                 series["previous_index_deleted"] = False
                 series["delete_warning"] = str(exc)
+            store[key] = series
+            save_series_store(store, reason="v16-smart-catalog-cleanup")
 
-    bot_info = (result or {}).get("_bot") or {}
-    series["index_bot_id"] = int(bot_info.get("id") or CATALOG_BOT.get("id") or 0)
-    series["index_bot_username"] = str(bot_info.get("username") or CATALOG_BOT.get("username") or "")
-    series["catalog_bot_id"] = int(CATALOG_BOT.get("id") or 0)
-    series["catalog_bot_username"] = str(CATALOG_BOT.get("username") or "")
-    series["catalog_version"] = CLUSTER_VERSION
-    series["updated_at"] = now_ts()
-    store[key] = series
-    save_series_store(store, reason="refresh-single-catalog")
-    return int(series.get("index_message_id") or 0)
+        return new_index_id
+    finally:
+        cluster_store.release_lock(lock_key)
+
 
 queue_lock = threading.Lock()
 queue_condition = threading.Condition(queue_lock)
@@ -1468,7 +1507,7 @@ PANEL_HTML = r"""
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>CineDrive Studio v15.4 Enterprise</title>
+<title>CineDrive Studio v16 Enterprise Smart Catalog</title>
 
 <style>
 :root{
@@ -1584,7 +1623,7 @@ button:active{transform:translateY(0) scale(.995)}
 </nav>
 <div class="wrap">
   <div class="card page-section" id="homeSection">
-    <h1>🎬 CineDrive Studio v15.4 Enterprise</h1>
+    <h1>🎬 CineDrive Studio v16 Enterprise Smart Catalog</h1>
     <p class="muted">Pilih menu di navigasi untuk mencari film, mengelola serial, atau melihat antrean tanpa perlu menggulir halaman panjang.</p>
     <div class="batch-help"><strong>Status penyimpanan:</strong> {% if storage.persistent %}<span class="SUCCESS">Permanen</span>{% else %}<span class="ERROR">Sementara</span>{% endif %}<br><span class="muted">Serial: {{ storage.series_path }}<br>Topic: {{ storage.topic_path }}<br>Backup: {{ storage.backup_dir }}</span>{% if storage.warning %}<p class="error">{{ storage.warning }}</p>{% endif %}</div>
   </div>
@@ -3474,23 +3513,53 @@ def _scheduler_payload(job: dict[str, Any]) -> tuple[dict[str, Any], bool]:
     return payload, local_only
 
 
-def _scheduler_worker_ids() -> list[str]:
-    ids = {cluster_store.worker_id}
+def _parse_cluster_timestamp(value: Any) -> float:
+    raw = str(value or "").strip()
+    if not raw:
+        return 0.0
     try:
-        for row in cluster_store.workers():
-            if not isinstance(row, dict):
-                continue
-            worker_id = str(row.get("worker_id") or row.get("updated_by") or "").strip()
-            if not worker_id:
-                raw = row.get("value", row.get("data")) or {}
-                if isinstance(raw, dict):
-                    worker_id = str(raw.get("worker_id") or "").strip()
-            if worker_id:
-                ids.add(worker_id)
+        return time.mktime(time.strptime(raw[:19], "%Y-%m-%dT%H:%M:%S"))
     except Exception:
-        pass
-    return sorted(ids)
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            return 0.0
 
+
+def _scheduler_worker_health() -> dict[str, dict[str, Any]]:
+    """Return worker heartbeat state; old Supabase rows are not treated as online."""
+    now = time.time()
+    health: dict[str, dict[str, Any]] = {}
+    try:
+        rows = cluster_store.workers()
+    except Exception:
+        rows = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        worker_id = str(row.get("worker_id") or row.get("updated_by") or "").strip()
+        if not worker_id:
+            continue
+        stamp = _parse_cluster_timestamp(row.get("last_seen") or row.get("updated_at"))
+        age = max(0.0, now - stamp) if stamp else float("inf")
+        health[worker_id] = {
+            "worker_id": worker_id,
+            "last_seen": row.get("last_seen") or row.get("updated_at"),
+            "age_seconds": int(age) if age != float("inf") else None,
+            "online": age <= V161_WORKER_OFFLINE_SECONDS,
+        }
+    health[cluster_store.worker_id] = {
+        "worker_id": cluster_store.worker_id,
+        "last_seen": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "age_seconds": 0,
+        "online": True,
+    }
+    return health
+
+
+def _scheduler_worker_ids() -> list[str]:
+    """Only return workers whose heartbeat is still fresh."""
+    return sorted(wid for wid, info in _scheduler_worker_health().items() if info.get("online"))
 
 def _scheduler_choose_worker() -> str:
     workers = _scheduler_worker_ids()
@@ -3726,34 +3795,105 @@ def _scheduler_claim_remote_jobs() -> None:
             if series_locked and series_lock_key:
                 cluster_store.release_lock(series_lock_key)
 
-def _scheduler_reassign_orphaned_queued_jobs() -> int:
-    """Alihkan job QUEUED yang ditugaskan ke worker yang sudah tidak aktif.
+def _scheduler_force_release_job_locks(remote: dict[str, Any], offline_worker: str) -> None:
+    """Remove locks owned by an offline worker so another Railway can claim the job."""
+    if not cluster_store.enabled:
+        return
+    job_id = str(remote.get("id") or "")
+    keys = [f"scheduler-claim:{job_id}"] if job_id else []
+    payload = remote.get("scheduler_payload") if isinstance(remote.get("scheduler_payload"), dict) else remote
+    identity_parts = [
+        str(payload.get("target_chat_id") or remote.get("target_chat_id") or CHANNEL_ID),
+        str(payload.get("message_thread_id") or remote.get("message_thread_id") or 0),
+        str(payload.get("tmdb_id") or payload.get("file_id") or payload.get("title") or job_id),
+        str(payload.get("season_number") or remote.get("season_number") or 0),
+        str(payload.get("episode_number") or remote.get("episode_number") or 0),
+    ]
+    keys.append("media:" + hashlib.sha256("|".join(identity_parts).encode("utf-8")).hexdigest()[:32])
+    for lock_key in keys:
+        try:
+            response = requests.delete(
+                cluster_store._endpoint("cinedrive_cluster"),
+                headers=cluster_store._headers("return=minimal"),
+                params={
+                    "namespace": f"eq.{cluster_store.namespace}",
+                    "record_type": "eq.lock",
+                    "record_key": f"eq.{lock_key}",
+                    "updated_by": f"eq.{offline_worker}",
+                },
+                timeout=20,
+            )
+            response.raise_for_status()
+        except Exception as exc:
+            cluster_store.last_error = f"failover release {lock_key}: {exc}"
 
-    Hanya job yang belum mulai diproses yang dialihkan, sehingga tidak menimbulkan
-    encode/upload ganda pada job PROCESSING atau UPLOADING.
+
+def _scheduler_reassign_orphaned_queued_jobs() -> int:
+    """Requeue portable jobs assigned to a worker whose heartbeat expired.
+
+    v16.1 also recovers jobs that were DOWNLOADING/PROCESSING/UPLOADING. Such jobs
+    restart from the original Google Drive source on an idle worker. Local-upload
+    jobs cannot be moved because their assets exist only on the failed Railway.
     """
-    if not (V13_QUEUE_FAILOVER_ENABLED and SCHEDULER_ENABLED and cluster_store.enabled):
+    if not (V13_QUEUE_FAILOVER_ENABLED and V161_FAILOVER_ENABLED and SCHEDULER_ENABLED and cluster_store.enabled):
         return 0
-    active_workers = set(_scheduler_worker_ids())
+    health = _scheduler_worker_health()
     changed = 0
-    for remote in cluster_store.enterprise_jobs():
-        if str(remote.get("state") or "") != "QUEUED":
+    transferable_states = {"QUEUED"} | (V161_FAILOVER_STATES if V161_FAILOVER_PROCESSING_JOBS else set())
+    for remote in _scheduler_latest_rows(cluster_store.enterprise_jobs()):
+        state = str(remote.get("state") or "")
+        if state not in transferable_states:
             continue
-        assigned = str(remote.get("assigned_worker") or "")
-        if not assigned or assigned in active_workers:
+        assigned = str(remote.get("assigned_worker") or remote.get("worker_id") or "").strip()
+        if not assigned or assigned == cluster_store.worker_id:
+            continue
+        info = health.get(assigned)
+        if info and info.get("online"):
+            continue
+        age = (info or {}).get("age_seconds")
+        if age is not None and age < (V161_WORKER_OFFLINE_SECONDS + V161_FAILOVER_GRACE_SECONDS):
             continue
         payload = remote.get("scheduler_payload")
         if not isinstance(payload, dict):
             continue
-        remote = dict(remote)
-        remote.update({
-            "assigned_worker": "", "worker_id": "",
-            "scheduler_status": "UNASSIGNED",
-            "message": f"Worker {assigned} tidak aktif; job dikembalikan ke antrean global.",
-            "failover_from": assigned, "failover_at": now_ts(),
+        if bool(remote.get("scheduler_local_only")):
+            failed = dict(remote)
+            failed.update({
+                "state": "ERROR",
+                "scheduler_status": "FAILOVER_BLOCKED_LOCAL_ASSET",
+                "message": f"Worker {assigned} offline; job tidak dapat dialihkan karena memakai file upload lokal.",
+                "error": "Failover membutuhkan sumber Google Drive yang dapat diakses worker lain.",
+                "failover_from": assigned,
+                "failover_at": now_ts(),
+                "finished_at": now_ts(),
+            })
+            cluster_store.publish_enterprise_job(failed)
+            changed += 1
+            continue
+        _scheduler_force_release_job_locks(remote, assigned)
+        recovered = dict(remote)
+        recovered.update({
+            "state": "QUEUED",
+            "assigned_worker": "",
+            "worker_id": "",
+            "scheduler_status": "FAILOVER_REQUEUED",
+            "message": f"Worker {assigned} offline; tugas dikembalikan ke antrean global.",
+            "progress_detail": f"Failover otomatis dari {assigned}; menunggu Railway idle.",
+            "error": None,
+            "started_at": None,
+            "finished_at": None,
+            "claimed_at": None,
+            "stage_progress": 0.0,
+            "overall_progress": 0.0,
+            "failover_from": assigned,
+            "failover_at": now_ts(),
+            "failover_count": int(remote.get("failover_count") or 0) + 1,
+            "last_failed_state": state,
         })
-        cluster_store.publish_enterprise_job(remote)
+        cluster_store.publish_enterprise_job(recovered)
+        print(f"[FAILOVER] job={remote.get('id')} from={assigned} state={state} requeued", flush=True)
         changed += 1
+        SCHEDULER_WAKE_EVENT.set()
     return changed
 
 
@@ -4493,6 +4633,8 @@ def v13_status():
 def cluster_status():
     return jsonify(cluster_store.status())
 
+@app.get("/v16.1-status")
+@app.get("/v16-status")
 @app.get("/v15-status")
 def v15_status():
     rows = _scheduler_latest_rows(cluster_store.enterprise_jobs()) if cluster_store.enabled else []
@@ -4507,6 +4649,10 @@ def v15_status():
         "smart_pipeline": SMART_PIPELINE_SCHEDULER,
         "event_assisted": True,
         "auto_recovery": V15_AUTO_RECOVERY_ENABLED,
+        "automatic_failover": V161_FAILOVER_ENABLED,
+        "failover_processing_jobs": V161_FAILOVER_PROCESSING_JOBS,
+        "worker_offline_seconds": V161_WORKER_OFFLINE_SECONDS,
+        "failover_grace_seconds": V161_FAILOVER_GRACE_SECONDS,
         "auto_cleanup": V15_AUTO_CLEANUP_ENABLED,
         "upload_retries": V15_UPLOAD_RETRIES,
         "canonical_job_count": len(rows),

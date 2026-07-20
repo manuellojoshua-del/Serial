@@ -1,77 +1,37 @@
-# CineDrive v15.4 Enterprise Worker Monitor
+# CineDrive v16.1 Enterprise Automatic Failover
 
-Versi ini menggabungkan **Single Serial Catalog**, **Supabase Canonical Database**, dan scheduler cluster yang lebih tahan terhadap job/claim lama.
+Versi ini mempertahankan **Smart Catalog v16** dan menambahkan failover otomatis lintas Railway.
 
-## Perbaikan utama
+## Fitur v16.1
 
-- Scheduler hanya memakai record terbaru untuk setiap serial, season, dan episode. Riwayat `ERROR` atau `SUCCESS` lama tidak lagi memblokir job baru.
-- Claim scheduler kedaluwarsa dan riwayat terminal dibersihkan otomatis.
-- Upload Telegram dicoba ulang sampai 3 kali.
-- Jika video episode sudah berhasil dikirim tetapi pembaruan katalog gagal, job tetap `SUCCESS`; katalog dicatat sebagai peringatan sehingga episode berikutnya tidak tertahan.
-- Scheduler menggunakan event lokal untuk bangun segera setelah job dibuat, dengan polling Supabase sebagai fallback lintas Railway.
-- Endpoint status: `/v15-status`.
+- Heartbeat worker diperiksa dari Supabase.
+- Worker dianggap offline setelah 90 detik tanpa heartbeat, lalu menunggu grace period 30 detik.
+- Job portabel berbasis Google Drive yang masih `QUEUED`, `CLAIMED`, `DOWNLOADING`, `PROCESSING`, `READY`, atau `UPLOADING` dikembalikan ke antrean global.
+- Railway lain yang online dan tidak memiliki tugas dapat mengklaim job tersebut.
+- Lock scheduler dan lock media milik worker offline dilepas sebelum klaim ulang.
+- Panel mencatat `failover_from`, `failover_at`, `failover_count`, dan tahap terakhir sebelum gagal.
+- Job dengan subtitle/logo upload lokal tidak dapat dipindahkan karena berkas hanya ada di volume Railway asal; job tersebut ditandai `ERROR` dengan penjelasan.
+- Endpoint status: `/v16.1-status` (endpoint lama `/v16-status` dan `/v15-status` tetap tersedia).
 
-## Konfigurasi pusat GitHub
+## Perilaku saat failover
 
-Pengaturan non-rahasia berada di `config.json`. Ubah file tersebut di GitHub dan redeploy source yang sama pada semua Railway. Environment variable Railway tetap menang jika nilainya dipasang.
+Jika Railway mati ketika encode atau upload belum selesai, Railway lain memulai ulang job dari sumber Google Drive. File sementara hasil encode tidak dapat dilanjutkan karena storage antar Railway tidak dibagikan.
 
-Rahasia berikut **tetap wajib di Railway** dan jangan dimasukkan ke GitHub:
-
-```env
-BOT_TOKEN=...
-CATALOG_BOT_TOKEN=...
-SECRET_KEY=...
-TMDB_API_KEY=...
-SUPABASE_URL=...
-SUPABASE_SERVICE_ROLE_KEY=...
-CHANNEL_ID=...
-CLUSTER_WORKER_ID=railway-1
-```
-
-`CLUSTER_WORKER_ID` harus berbeda pada setiap Railway. `CATALOG_BOT_TOKEN` boleh sama dengan `BOT_TOKEN`.
-
-## Config URL opsional
-
-Selain `config.json` dalam repository, Anda dapat menyimpan JSON publik/privat yang dapat diakses server lalu memasang satu kali:
+## Variabel Railway
 
 ```env
-CONFIG_URL=https://raw.githubusercontent.com/USER/REPO/main/config.json
+V161_FAILOVER_ENABLED=1
+V161_WORKER_OFFLINE_SECONDS=90
+V161_FAILOVER_GRACE_SECONDS=30
+V161_FAILOVER_PROCESSING_JOBS=1
 ```
 
-Konfigurasi dibaca saat startup. Untuk menerapkan perubahan, lakukan redeploy; Railway yang terhubung ke GitHub biasanya redeploy otomatis setelah commit.
+Gunakan `CLUSTER_WORKER_ID` berbeda pada setiap service, misalnya `railway-1` dan `railway-2`. Semua service harus memakai `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `CLUSTER_NAMESPACE`, dan source code yang sama.
 
 ## Deploy
 
-1. Upload semua file ZIP ke repository GitHub.
-2. Jalankan `supabase_setup.sql` jika tabel belum ada.
-3. Pastikan rahasia di atas tersedia pada setiap Railway.
+1. Ganti isi repository dengan file versi ini.
+2. Pastikan variabel Supabase dan Telegram tersedia di seluruh Railway.
+3. Atur `CLUSTER_WORKER_ID` berbeda untuk masing-masing Railway.
 4. Redeploy semua worker.
-5. Periksa `/v15-status` pada setiap domain.
-
-
-## Perbaikan v15.2
-
-- Semua fitur Telegram, termasuk Scan Group & Topic, memakai `TELEGRAM_API_BASE`.
-- Default aman diubah menjadi `https://api.telegram.org`.
-- Jika Local Bot API tidak dapat diakses, aplikasi mencoba API resmi Telegram sebagai fallback.
-- Tombol **Tes Koneksi Bot API** menampilkan endpoint, latensi, username bot, dan error koneksi.
-- Variabel opsional: `TELEGRAM_API_FALLBACK_BASE=https://api.telegram.org`.
-
-
-## Perbaikan v15.3
-
-- Panel **Antrean & status** menggabungkan job lokal dengan status authoritative Supabase.
-- Job yang dikirim dari Railway-2 tetapi diklaim Railway-1 langsung berubah dari `QUEUED` menjadi status proses sebenarnya.
-- Panel menampilkan `Worker proses` dan penanda `diproses di Railway lain`.
-- Progress, tahap, ETA, detail, ukuran file, bot, serta message ID dipublikasikan lintas Railway.
-- Job aktif yang dibuat dari panel Railway lain ikut terlihat.
-- Nama dari `TOPIC_OPTIONS` sekarang lebih diprioritaskan daripada nama generik hasil scan seperti `Topic 3`.
-
-
-## Perbaikan v15.4
-
-- Panel Status menampilkan setiap Railway sebagai **ONLINE** atau **OFFLINE**.
-- Worker dianggap offline jika heartbeat tidak diperbarui selama 90 detik.
-- Menampilkan waktu terakhir aktif, versi aplikasi, jumlah job aktif, judul job yang sedang diproses, dan CPU terdeteksi.
-- Ringkasan menampilkan jumlah worker online dan offline.
-- Batas offline dapat diubah melalui `WORKER_OFFLINE_SECONDS`, misalnya `120`.
+5. Buka `/v16.1-status` dan pastikan kedua worker berstatus online.

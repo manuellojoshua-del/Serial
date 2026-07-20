@@ -1,1 +1,1 @@
-CineDrive v15.4.0 Enterprise Worker Monitor
+CineDrive v16.1 Enterprise Automatic Failover
