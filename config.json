@@ -1,0 +1,46 @@
+{
+  "app": {
+    "max_queue": 20
+  },
+  "telegram": {
+    "target_gb": 1.45,
+    "audio_kbps": 128,
+    "episode_buttons_per_row": 5
+  },
+  "tmdb": {
+    "language": "id-ID"
+  },
+  "encoding": {
+    "codec": "libx265",
+    "preset": "ultrafast",
+    "threads": 2,
+    "frame_threads": 1,
+    "wpp": false,
+    "turbo": true,
+    "fallback_h264": true
+  },
+  "scheduler": {
+    "enabled": true,
+    "poll_seconds": 5,
+    "max_jobs_per_worker": 1,
+    "claim_ttl_seconds": 300,
+    "series_sequential": true,
+    "smart_pipeline": true,
+    "pipeline_poll_seconds": 3,
+    "auto_recovery": true,
+    "auto_cleanup": true,
+    "success_retention_seconds": 604800,
+    "error_retention_seconds": 86400,
+    "upload_retries": 3
+  },
+  "cluster": {
+    "enabled": true,
+    "lock_ttl_seconds": 21600
+  },
+  "global_database": {
+    "enabled": true,
+    "bootstrap_local": false,
+    "publish_local": false,
+    "refresh_seconds": 5
+  }
+}

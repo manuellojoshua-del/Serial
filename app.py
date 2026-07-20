@@ -26,6 +26,113 @@ from flask import Flask, jsonify, redirect, render_template_string, request, url
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024
 
+# CineDrive v15: central non-secret configuration from GitHub/repository.
+# Railway environment variables always take precedence. Secrets are intentionally
+# blocked from config.json/CONFIG_URL and must remain in Railway.
+CENTRAL_CONFIG_STATUS: dict[str, Any] = {
+    "enabled": False, "source": "defaults", "loaded_at": 0,
+    "error": "", "applied_keys": [], "fingerprint": "",
+}
+_CONFIG_SECRET_KEYS = {
+    "BOT_TOKEN", "BOT_TOKENS", "CATALOG_BOT_TOKEN", "SECRET_KEY",
+    "TMDB_API_KEY", "SUPABASE_SERVICE_ROLE_KEY", "API_ID", "API_HASH",
+}
+_CONFIG_KEY_MAP = {
+    "app.max_queue": "MAX_QUEUE",
+    "telegram.api_base": "TELEGRAM_API_BASE",
+    "telegram.target_gb": "TELEGRAM_TARGET_GB",
+    "telegram.audio_kbps": "TELEGRAM_AUDIO_KBPS",
+    "telegram.default_thread_id": "DEFAULT_THREAD_ID",
+    "telegram.episode_buttons_per_row": "EPISODE_BUTTONS_PER_ROW",
+    "tmdb.language": "TMDB_LANGUAGE",
+    "encoding.codec": "TELEGRAM_VIDEO_CODEC",
+    "encoding.preset": "TELEGRAM_X265_PRESET",
+    "encoding.threads": "TELEGRAM_X265_THREADS",
+    "encoding.frame_threads": "TELEGRAM_X265_FRAME_THREADS",
+    "encoding.wpp": "TELEGRAM_X265_WPP",
+    "encoding.turbo": "TELEGRAM_X265_TURBO",
+    "encoding.fallback_h264": "TELEGRAM_FALLBACK_H264",
+    "scheduler.enabled": "SCHEDULER_ENABLED",
+    "scheduler.poll_seconds": "SCHEDULER_POLL_SECONDS",
+    "scheduler.max_jobs_per_worker": "SCHEDULER_MAX_JOBS_PER_WORKER",
+    "scheduler.claim_ttl_seconds": "SCHEDULER_CLAIM_TTL_SECONDS",
+    "scheduler.series_sequential": "SERIES_SEQUENTIAL_SCHEDULER",
+    "scheduler.smart_pipeline": "SMART_PIPELINE_SCHEDULER",
+    "scheduler.pipeline_poll_seconds": "SMART_PIPELINE_POLL_SECONDS",
+    "scheduler.auto_recovery": "V15_AUTO_RECOVERY_ENABLED",
+    "scheduler.auto_cleanup": "V15_AUTO_CLEANUP_ENABLED",
+    "scheduler.success_retention_seconds": "V15_SUCCESS_RETENTION_SECONDS",
+    "scheduler.error_retention_seconds": "V15_ERROR_RETENTION_SECONDS",
+    "scheduler.upload_retries": "V15_UPLOAD_RETRIES",
+    "cluster.enabled": "ENTERPRISE_CLUSTER_ENABLED",
+    "cluster.lock_ttl_seconds": "ENTERPRISE_LOCK_TTL_SECONDS",
+    "global_database.enabled": "GLOBAL_SYNC_ENABLED",
+    "global_database.bootstrap_local": "GLOBAL_SYNC_BOOTSTRAP_LOCAL",
+    "global_database.publish_local": "GLOBAL_DATABASE_PUBLISH_LOCAL",
+    "global_database.refresh_seconds": "GLOBAL_DATABASE_REFRESH_SECONDS",
+}
+
+def _flatten_config(value: Any, prefix: str = "") -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    if not isinstance(value, dict):
+        return out
+    for key, item in value.items():
+        path = f"{prefix}.{key}" if prefix else str(key)
+        if isinstance(item, dict):
+            out.update(_flatten_config(item, path))
+        else:
+            out[path] = item
+    return out
+
+def _config_env_value(value: Any) -> str:
+    if isinstance(value, bool):
+        return "1" if value else "0"
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False)
+    return str(value)
+
+def _load_central_config() -> None:
+    merged: dict[str, Any] = {}
+    sources: list[str] = []
+    local_path = Path(os.getenv("CONFIG_FILE", "config.json"))
+    try:
+        if local_path.exists():
+            parsed = json.loads(local_path.read_text(encoding="utf-8"))
+            if isinstance(parsed, dict):
+                merged.update(parsed)
+                sources.append(str(local_path))
+    except Exception as exc:
+        CENTRAL_CONFIG_STATUS["error"] = f"local config: {exc}"
+    config_url = os.getenv("CONFIG_URL", "").strip()
+    if config_url:
+        try:
+            response = requests.get(config_url, timeout=20, headers={"Cache-Control": "no-cache"})
+            response.raise_for_status()
+            parsed = response.json()
+            if isinstance(parsed, dict):
+                # Remote values override repository defaults.
+                merged = {**merged, **parsed}
+                sources.append(config_url)
+        except Exception as exc:
+            CENTRAL_CONFIG_STATUS["error"] = f"remote config: {exc}"
+    flat = _flatten_config(merged)
+    applied: list[str] = []
+    for path, env_name in _CONFIG_KEY_MAP.items():
+        if env_name in _CONFIG_SECRET_KEYS or path not in flat or env_name in os.environ:
+            continue
+        os.environ[env_name] = _config_env_value(flat[path])
+        applied.append(env_name)
+    raw = json.dumps(merged, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    CENTRAL_CONFIG_STATUS.update({
+        "enabled": bool(merged), "source": ", ".join(sources) or "defaults",
+        "loaded_at": int(time.time()), "applied_keys": sorted(applied),
+        "fingerprint": hashlib.sha256(raw.encode("utf-8")).hexdigest() if merged else "",
+    })
+    if merged:
+        print(f"[CONFIG] loaded source={CENTRAL_CONFIG_STATUS['source']} applied={len(applied)}", flush=True)
+
+_load_central_config()
+
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 BOT_TOKENS_RAW = os.getenv("BOT_TOKENS", "").strip()
 
@@ -106,7 +213,7 @@ EPISODE_BUTTONS_PER_ROW = max(
 )
 
 
-CLUSTER_VERSION = "14.2.0"
+CLUSTER_VERSION = "15.0.0"
 
 
 def _deep_merge_cluster(remote: Any, local: Any) -> Any:
@@ -138,6 +245,14 @@ SERIES_SEQUENTIAL_SCHEDULER = os.getenv("SERIES_SEQUENTIAL_SCHEDULER", "1").stri
 SMART_PIPELINE_SCHEDULER = os.getenv("SMART_PIPELINE_SCHEDULER", "1").strip().lower() in {"1", "true", "yes", "on"}
 SMART_PIPELINE_POLL_SECONDS = max(2, int(os.getenv("SMART_PIPELINE_POLL_SECONDS", "5")))
 SMART_PIPELINE_WAIT_TIMEOUT_SECONDS = max(3600, int(os.getenv("SMART_PIPELINE_WAIT_TIMEOUT_SECONDS", "86400")))
+V15_AUTO_RECOVERY_ENABLED = os.getenv("V15_AUTO_RECOVERY_ENABLED", "1").strip().lower() in {"1", "true", "yes", "on"}
+V15_AUTO_CLEANUP_ENABLED = os.getenv("V15_AUTO_CLEANUP_ENABLED", "1").strip().lower() in {"1", "true", "yes", "on"}
+V15_SUCCESS_RETENTION_SECONDS = max(3600, int(os.getenv("V15_SUCCESS_RETENTION_SECONDS", "604800") or "604800"))
+V15_ERROR_RETENTION_SECONDS = max(1800, int(os.getenv("V15_ERROR_RETENTION_SECONDS", "86400") or "86400"))
+V15_UPLOAD_RETRIES = max(1, min(5, int(os.getenv("V15_UPLOAD_RETRIES", "3") or "3")))
+V15_CLEANUP_INTERVAL_SECONDS = max(60, int(os.getenv("V15_CLEANUP_INTERVAL_SECONDS", "300") or "300"))
+V15_EVENT_WAKE_SECONDS = max(1, int(os.getenv("V15_EVENT_WAKE_SECONDS", "2") or "2"))
+SCHEDULER_WAKE_EVENT = threading.Event()
 
 # CineDrive v13 Enterprise
 CATALOG_BOT_TOKEN_RAW = os.getenv("CATALOG_BOT_TOKEN", "").strip()
@@ -3392,6 +3507,25 @@ def _scheduler_created_value(job: dict[str, Any]) -> float:
         return 0.0
 
 
+def _scheduler_latest_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep only the newest job for each serial/season/episode identity.
+
+    Older SUCCESS/ERROR duplicates must never block a newly submitted episode.
+    Film jobs and jobs without a stable episode identity remain distinct by job id.
+    """
+    latest: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        identity = _scheduler_series_identity(row)
+        episode = int(row.get("episode_number") or 0)
+        if identity and episode > 0:
+            key = f"serial:{identity}:episode:{episode}"
+        else:
+            key = f"job:{row.get('id') or row.get('item_key') or id(row)}"
+        current = latest.get(key)
+        if current is None or _scheduler_created_value(row) >= _scheduler_created_value(current):
+            latest[key] = row
+    return list(latest.values())
+
 def _scheduler_series_ready(candidate: dict[str, Any], rows: list[dict[str, Any]]) -> bool:
     """Strict sequential dispatch for serial episodes only.
 
@@ -3399,6 +3533,7 @@ def _scheduler_series_ready(candidate: dict[str, Any], rows: list[dict[str, Any]
     the same series, season, chat, and topic has reached SUCCESS. Film jobs do
     not have an episode number, so they remain globally parallel.
     """
+    rows = _scheduler_latest_rows(rows)
     identity = _scheduler_series_identity(candidate)
     if not identity:
         return True
@@ -3424,7 +3559,7 @@ def _scheduler_claim_remote_jobs() -> None:
     if _scheduler_local_active_count() >= SCHEDULER_MAX_JOBS_PER_WORKER:
         return
 
-    rows = cluster_store.enterprise_jobs()
+    rows = _scheduler_latest_rows(cluster_store.enterprise_jobs())
     candidates = [row for row in rows if str(row.get("state") or "") == "QUEUED"]
     candidates.sort(key=lambda row: (
         _scheduler_created_value(row),
@@ -3504,6 +3639,7 @@ def _scheduler_claim_remote_jobs() -> None:
                 jobs[job_id] = restored
                 pending_jobs.append(job_id)
                 queue_condition.notify()
+                SCHEDULER_WAKE_EVENT.set()
         finally:
             if series_locked and series_lock_key:
                 cluster_store.release_lock(series_lock_key)
@@ -3539,6 +3675,64 @@ def _scheduler_reassign_orphaned_queued_jobs() -> int:
     return changed
 
 
+def _v15_delete_cluster_rows(params: dict[str, str]) -> int:
+    if not cluster_store.enabled:
+        return 0
+    response = requests.delete(
+        cluster_store._endpoint("cinedrive_cluster"),
+        headers=cluster_store._headers("return=representation"),
+        params=params,
+        timeout=30,
+    )
+    response.raise_for_status()
+    try:
+        rows = response.json()
+        return len(rows) if isinstance(rows, list) else 0
+    except ValueError:
+        return 0
+
+
+def _v15_cleanup_stale_records() -> dict[str, int]:
+    """Delete expired claims and old terminal job history.
+
+    The newest canonical episode row is retained by the scheduler even before
+    cleanup, so this maintenance is safe and mainly keeps Supabase compact.
+    """
+    result = {"claims": 0, "success": 0, "error": 0}
+    if not (V15_AUTO_CLEANUP_ENABLED and cluster_store.enabled):
+        return result
+    now = time.time()
+    claim_cutoff = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now - SCHEDULER_CLAIM_TTL_SECONDS))
+    success_cutoff = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now - V15_SUCCESS_RETENTION_SECONDS))
+    error_cutoff = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now - V15_ERROR_RETENTION_SECONDS))
+    try:
+        result["claims"] = _v15_delete_cluster_rows({
+            "namespace": f"eq.{cluster_store.namespace}",
+            "record_type": "eq.lock", "record_key": "like.scheduler-claim:*",
+            "updated_at": f"lt.{claim_cutoff}",
+        })
+        # PostgREST JSON path filters are supported through data->>state.
+        result["success"] = _v15_delete_cluster_rows({
+            "namespace": f"eq.{cluster_store.namespace}", "bucket": "eq.documents",
+            "item_key": "like.enterprise-job:*", "data->>state": "eq.SUCCESS",
+            "updated_at": f"lt.{success_cutoff}",
+        })
+        result["error"] = _v15_delete_cluster_rows({
+            "namespace": f"eq.{cluster_store.namespace}", "bucket": "eq.documents",
+            "item_key": "like.enterprise-job:*", "data->>state": "eq.ERROR",
+            "updated_at": f"lt.{error_cutoff}",
+        })
+    except Exception as exc:
+        cluster_store.last_error = f"v15-cleanup: {exc}"
+    return result
+
+
+def v15_maintenance_worker() -> None:
+    while True:
+        _v15_cleanup_stale_records()
+        time.sleep(V15_CLEANUP_INTERVAL_SECONDS)
+
+
 def scheduler_worker() -> None:
     while True:
         try:
@@ -3546,11 +3740,14 @@ def scheduler_worker() -> None:
             _scheduler_claim_remote_jobs()
         except Exception as exc:
             cluster_store.last_error = f"scheduler: {exc}"
-        time.sleep(SCHEDULER_POLL_SECONDS)
+        # Event-assisted wakeup for local submissions, with polling fallback for
+        # changes made by other Railway workers.
+        SCHEDULER_WAKE_EVENT.wait(timeout=SCHEDULER_POLL_SECONDS)
+        SCHEDULER_WAKE_EVENT.clear()
 
 def _pipeline_shared_rows() -> list[dict[str, Any]]:
     try:
-        return cluster_store.enterprise_jobs()
+        return _scheduler_latest_rows(cluster_store.enterprise_jobs())
     except Exception as exc:
         cluster_store.last_error = f"pipeline-read: {exc}"
         return []
@@ -3604,6 +3801,21 @@ def _pipeline_wait_for_upload_turn(job_id: str, data: dict[str, Any]) -> None:
         if time.monotonic() - started > SMART_PIPELINE_WAIT_TIMEOUT_SECONDS:
             raise RuntimeError(f"Timeout menunggu urutan upload. Episode E{ep:02d} belum berhasil.")
         time.sleep(SMART_PIPELINE_POLL_SECONDS)
+
+def upload_video_with_retry(*args: Any, **kwargs: Any) -> dict[str, Any]:
+    last_error: Exception | None = None
+    for attempt in range(1, V15_UPLOAD_RETRIES + 1):
+        try:
+            return upload_video(*args, **kwargs)
+        except Exception as exc:
+            last_error = exc
+            if attempt >= V15_UPLOAD_RETRIES:
+                break
+            delay = min(30, 3 * attempt)
+            print(f"[UPLOAD] attempt {attempt}/{V15_UPLOAD_RETRIES} failed: {exc}; retry in {delay}s", flush=True)
+            time.sleep(delay)
+    raise RuntimeError(f"Upload Telegram gagal setelah {V15_UPLOAD_RETRIES} percobaan: {last_error}")
+
 
 def process_job(job_id: str) -> None:
     with queue_lock:
@@ -3720,7 +3932,7 @@ def process_job(job_id: str) -> None:
             message=("Mengunggah video film." if not is_episode else "Mengunggah episode ke Telegram."),
             detail="Memulai koneksi upload.",
         )
-        result = upload_video(
+        result = upload_video_with_retry(
             job_id,
             output_path,
             thumb_path,
@@ -3734,29 +3946,34 @@ def process_job(job_id: str) -> None:
         )
         index_message_id = 0
 
+        catalog_warning = ""
         if is_episode:
             update_progress(
                 job_id,
                 "UPLOADING",
                 100,
-                message="Memperbarui daftar episode serial.",
-                detail="Membuat tombol episode.",
+                message="Video episode berhasil; memperbarui katalog serial.",
+                detail="Menyimpan message_id sebelum pembaruan katalog.",
+                message_id=episode_message_id,
             )
-            index_message_id = create_or_update_series_index(
-                data,
-                episode_message_id,
-            )
+            try:
+                index_message_id = create_or_update_series_index(data, episode_message_id)
+            except Exception as catalog_exc:
+                # The episode upload itself is authoritative. A catalog failure is
+                # recorded as a warning and can be repaired without blocking E+1.
+                catalog_warning = str(catalog_exc)
+                print(f"[CATALOG] warning job={job_id}: {catalog_exc}", flush=True)
 
         update_progress(
             job_id,
             "SUCCESS",
             100,
             message=(
-                "Episode berhasil dikirim dan daftar serial diperbarui/dipulihkan."
+                ("Episode berhasil dikirim; katalog perlu diperbaiki." if catalog_warning else "Episode berhasil dikirim dan katalog serial diperbarui.")
                 if is_episode
                 else "Poster dan video berhasil dikirim."
             ),
-            detail="Selesai.",
+            detail=(f"Selesai dengan peringatan katalog: {catalog_warning}" if catalog_warning else "Selesai."),
             message_id=episode_message_id,
             index_message_id=index_message_id,
             finished_at=now_ts(),
@@ -3787,6 +4004,7 @@ def ensure_worker_started() -> None:
 
 ensure_worker_started()
 threading.Thread(target=scheduler_worker, daemon=True, name="enterprise-scheduler-worker").start()
+threading.Thread(target=v15_maintenance_worker, daemon=True, name="v15-maintenance-worker").start()
 
 
 def human_bytes(value: int) -> str:
@@ -4152,6 +4370,30 @@ def v13_status():
 @app.get("/cluster-status")
 def cluster_status():
     return jsonify(cluster_store.status())
+
+@app.get("/v15-status")
+def v15_status():
+    rows = _scheduler_latest_rows(cluster_store.enterprise_jobs()) if cluster_store.enabled else []
+    return jsonify({
+        "success": True,
+        "version": CLUSTER_VERSION,
+        "mode": "enterprise-stable-event-assisted",
+        "worker_id": cluster_store.worker_id,
+        "worker_count": len(_scheduler_worker_ids()),
+        "scheduler_enabled": SCHEDULER_ENABLED,
+        "series_sequential": SERIES_SEQUENTIAL_SCHEDULER,
+        "smart_pipeline": SMART_PIPELINE_SCHEDULER,
+        "event_assisted": True,
+        "auto_recovery": V15_AUTO_RECOVERY_ENABLED,
+        "auto_cleanup": V15_AUTO_CLEANUP_ENABLED,
+        "upload_retries": V15_UPLOAD_RETRIES,
+        "canonical_job_count": len(rows),
+        "queued_count": sum(1 for row in rows if str(row.get("state") or "") == "QUEUED"),
+        "active_count": sum(1 for row in rows if str(row.get("state") or "") in {"CLAIMED", "DOWNLOADING", "PROCESSING", "PREPARING", "READY", "UPLOADING"}),
+        "central_config": CENTRAL_CONFIG_STATUS,
+        "last_error": cluster_store.last_error,
+    })
+
 
 @app.route("/cluster-heartbeat", methods=["GET", "POST"])
 def cluster_heartbeat():

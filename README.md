@@ -1,41 +1,49 @@
-# CineDrive v14.2 — Single Serial Catalog
+# CineDrive v15 Enterprise Stable
 
-Versi ini mempertahankan **satu posting katalog untuk setiap serial**.
+Versi ini menggabungkan **Single Serial Catalog**, **Supabase Canonical Database**, dan scheduler cluster yang lebih tahan terhadap job/claim lama.
 
-## Alur serial
+## Perbaikan utama
 
-1. Episode pertama dikirim sebagai video.
-2. Bot katalog membuat satu posting poster berisi judul dan tautan `E.01`.
-3. Saat Episode 2 selesai, bot mengedit posting katalog yang sama menjadi `E.01 | E.02`.
-4. Episode berikutnya terus ditambahkan ke posting yang sama.
-5. Mengetuk nomor episode membuka langsung pesan video episode tersebut.
+- Scheduler hanya memakai record terbaru untuk setiap serial, season, dan episode. Riwayat `ERROR` atau `SUCCESS` lama tidak lagi memblokir job baru.
+- Claim scheduler kedaluwarsa dan riwayat terminal dibersihkan otomatis.
+- Upload Telegram dicoba ulang sampai 3 kali.
+- Jika video episode sudah berhasil dikirim tetapi pembaruan katalog gagal, job tetap `SUCCESS`; katalog dicatat sebagai peringatan sehingga episode berikutnya tidak tertahan.
+- Scheduler menggunakan event lokal untuk bangun segera setelah job dibuat, dengan polling Supabase sebagai fallback lintas Railway.
+- Endpoint status: `/v15-status`.
 
-Tidak ada poster katalog baru untuk setiap episode. Video episode tetap dikirim sebagai pesan tersendiri.
+## Konfigurasi pusat GitHub
 
-## Multi-Railway
+Pengaturan non-rahasia berada di `config.json`. Ubah file tersebut di GitHub dan redeploy source yang sama pada semua Railway. Environment variable Railway tetap menang jika nilainya dipasang.
 
-Semua Railway harus memakai nilai `CATALOG_BOT_TOKEN` yang sama. Telegram hanya mengizinkan bot pembuat pesan mengedit pesan tersebut.
-
-Jika katalog lama dibuat oleh bot berbeda dan tidak dapat diedit, CineDrive membuat katalog baru sebagai fallback lalu mencoba menghapus katalog lama.
-
-## Variabel penting
+Rahasia berikut **tetap wajib di Railway** dan jangan dimasukkan ke GitHub:
 
 ```env
-CATALOG_BOT_TOKEN=TOKEN_BOT_KATALOG
-SERIES_SEQUENTIAL_SCHEDULER=1
-SMART_PIPELINE_SCHEDULER=1
-SCHEDULER_ENABLED=1
-GLOBAL_SYNC_ENABLED=1
-GLOBAL_SYNC_BOOTSTRAP_LOCAL=0
-GLOBAL_DATABASE_PUBLISH_LOCAL=0
+BOT_TOKEN=...
+CATALOG_BOT_TOKEN=...
+SECRET_KEY=...
+TMDB_API_KEY=...
+SUPABASE_URL=...
+SUPABASE_SERVICE_ROLE_KEY=...
+CHANNEL_ID=...
+CLUSTER_WORKER_ID=railway-1
 ```
 
-`CATALOG_BOT_TOKEN` boleh sama dengan `BOT_TOKEN` jika hanya memakai satu bot.
+`CLUSTER_WORKER_ID` harus berbeda pada setiap Railway. `CATALOG_BOT_TOKEN` boleh sama dengan `BOT_TOKEN`.
+
+## Config URL opsional
+
+Selain `config.json` dalam repository, Anda dapat menyimpan JSON publik/privat yang dapat diakses server lalu memasang satu kali:
+
+```env
+CONFIG_URL=https://raw.githubusercontent.com/USER/REPO/main/config.json
+```
+
+Konfigurasi dibaca saat startup. Untuk menerapkan perubahan, lakukan redeploy; Railway yang terhubung ke GitHub biasanya redeploy otomatis setelah commit.
 
 ## Deploy
 
-1. Ganti seluruh file project dengan isi ZIP.
-2. Gunakan source yang sama pada semua Railway.
-3. Pastikan bot katalog menjadi admin dan memiliki izin kirim, edit, serta hapus pesan.
-4. Redeploy semua service.
-5. Tambahkan episode baru. Katalog lama akan diedit, bukan dibuat ulang.
+1. Upload semua file ZIP ke repository GitHub.
+2. Jalankan `supabase_setup.sql` jika tabel belum ada.
+3. Pastikan rahasia di atas tersedia pada setiap Railway.
+4. Redeploy semua worker.
+5. Periksa `/v15-status` pada setiap domain.
