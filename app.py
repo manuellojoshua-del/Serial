@@ -157,8 +157,22 @@ TMDB_API_KEY = os.environ["TMDB_API_KEY"]
 
 TELEGRAM_API_BASE = os.getenv(
     "TELEGRAM_API_BASE",
-    "http://telegram-bot-api.railway.internal:8081",
-).rstrip("/")
+    "https://api.telegram.org",
+).strip().rstrip("/") or "https://api.telegram.org"
+
+TELEGRAM_API_FALLBACK_BASE = os.getenv(
+    "TELEGRAM_API_FALLBACK_BASE",
+    "https://api.telegram.org",
+).strip().rstrip("/") or "https://api.telegram.org"
+
+def telegram_api_bases() -> list[str]:
+    """Return configured Bot API base first, then official API as a safe fallback."""
+    bases: list[str] = []
+    for value in (TELEGRAM_API_BASE, TELEGRAM_API_FALLBACK_BASE):
+        base = str(value or "").strip().rstrip("/")
+        if base and base not in bases:
+            bases.append(base)
+    return bases
 TMDB_LANGUAGE = os.getenv("TMDB_LANGUAGE", "id-ID")
 TMDB_IMAGE_BASE = os.getenv("TMDB_IMAGE_BASE", "https://image.tmdb.org/t/p/w780")
 MAX_QUEUE = int(os.getenv("MAX_QUEUE", "20"))
@@ -213,7 +227,7 @@ EPISODE_BUTTONS_PER_ROW = max(
 )
 
 
-CLUSTER_VERSION = "15.0.0"
+CLUSTER_VERSION = "15.2.0"
 
 
 def _deep_merge_cluster(remote: Any, local: Any) -> Any:
@@ -799,8 +813,9 @@ ACTIVE_BOT_TOKEN, ACTIVE_BOT_INDEX = _select_active_bot_token()
 _bot_identity_lock = threading.Lock()
 _bot_identity_cache: dict[str, dict[str, Any]] = {}
 
-def telegram_api_url(token: str, method: str) -> str:
-    return f"{TELEGRAM_API_BASE}/bot{token}/{method}"
+def telegram_api_url(token: str, method: str, base: str | None = None) -> str:
+    api_base = (base or TELEGRAM_API_BASE).rstrip("/")
+    return f"{api_base}/bot{token}/{method}"
 
 def get_bot_identity(token: str = ACTIVE_BOT_TOKEN) -> dict[str, Any]:
     with _bot_identity_lock:
@@ -1439,7 +1454,7 @@ PANEL_HTML = r"""
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>CineDrive Studio v12.2 Episode Catalog</title>
+<title>CineDrive Studio v15.2 Enterprise</title>
 
 <style>
 :root{
@@ -1555,7 +1570,7 @@ button:active{transform:translateY(0) scale(.995)}
 </nav>
 <div class="wrap">
   <div class="card page-section" id="homeSection">
-    <h1>🎬 CineDrive Studio v12.2 Episode Catalog</h1>
+    <h1>🎬 CineDrive Studio v15.2 Enterprise</h1>
     <p class="muted">Pilih menu di navigasi untuk mencari film, mengelola serial, atau melihat antrean tanpa perlu menggulir halaman panjang.</p>
     <div class="batch-help"><strong>Status penyimpanan:</strong> {% if storage.persistent %}<span class="SUCCESS">Permanen</span>{% else %}<span class="ERROR">Sementara</span>{% endif %}<br><span class="muted">Serial: {{ storage.series_path }}<br>Topic: {{ storage.topic_path }}<br>Backup: {{ storage.backup_dir }}</span>{% if storage.warning %}<p class="error">{{ storage.warning }}</p>{% endif %}</div>
   </div>
@@ -1563,9 +1578,14 @@ button:active{transform:translateY(0) scale(.995)}
   <div class="card page-section active" id="searchSection">
     <h1>🎬 CineDrive Studio</h1>
     <p class="muted" style="font-size:15px;margin-top:0">Kelola film, serial, subtitle, watermark, dan publikasi Telegram dalam satu panel. Episode baru mengambil detail TMDB terbaru dan mengganti posting indeks lama secara otomatis.</p>
-    <form method="post" action="{{ scan_url }}">
-      <button type="submit">Scan Group & Topic terbaru</button>
-    </form>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+      <form method="post" action="{{ scan_url }}">
+        <button type="submit">Scan Group & Topic terbaru</button>
+      </form>
+      <form method="post" action="{{ test_telegram_url }}">
+        <button type="submit">Tes Koneksi Bot API</button>
+      </form>
+    </div>
     {% if scan_message %}
       <p class="muted">{{ scan_message }}</p>
     {% endif %}
@@ -2141,22 +2161,58 @@ def topic_name_from_id(thread_id: int, chat_id: str | int | None = None) -> str:
     return "General" if thread_id == 0 else f"Topic {thread_id}"
 
 def telegram_method(method: str, *, params: dict[str, Any] | None = None) -> dict[str, Any]:
-    response = requests.get(
-        telegram_api_url(ACTIVE_BOT_TOKEN, method),
-        params=params or {},
-        timeout=60,
-    )
-    try:
-        data = response.json()
-    except ValueError as exc:
-        raise RuntimeError(
-            f"Telegram memberikan respons bukan JSON: HTTP {response.status_code}"
-        ) from exc
-    if not response.ok or not data.get("ok"):
-        raise RuntimeError(
-            data.get("description") or f"Telegram HTTP {response.status_code}"
-        )
-    return data
+    """Call Telegram using configured Local Bot API, then official API if unreachable."""
+    errors: list[str] = []
+    for base in telegram_api_bases():
+        try:
+            response = requests.get(
+                telegram_api_url(ACTIVE_BOT_TOKEN, method, base=base),
+                params=params or {},
+                timeout=60,
+            )
+            try:
+                data = response.json()
+            except ValueError as exc:
+                raise RuntimeError(
+                    f"{base}: respons bukan JSON (HTTP {response.status_code})"
+                ) from exc
+            if not response.ok or not data.get("ok"):
+                raise RuntimeError(
+                    f"{base}: {data.get('description') or f'Telegram HTTP {response.status_code}'}"
+                )
+            data["_api_base"] = base
+            return data
+        except Exception as exc:
+            errors.append(str(exc))
+    raise RuntimeError("Semua Telegram Bot API gagal: " + " | ".join(errors[-3:]))
+
+def test_telegram_connections() -> dict[str, Any]:
+    results: list[dict[str, Any]] = []
+    for base in telegram_api_bases():
+        started = time.time()
+        try:
+            response = requests.get(
+                telegram_api_url(ACTIVE_BOT_TOKEN, "getMe", base=base),
+                timeout=20,
+            )
+            payload = response.json()
+            ok = bool(response.ok and payload.get("ok"))
+            results.append({
+                "base": base,
+                "ok": ok,
+                "latency_ms": int((time.time() - started) * 1000),
+                "bot": (payload.get("result") or {}).get("username", ""),
+                "error": "" if ok else str(payload.get("description") or response.text[:300]),
+            })
+        except Exception as exc:
+            results.append({
+                "base": base,
+                "ok": False,
+                "latency_ms": int((time.time() - started) * 1000),
+                "bot": "",
+                "error": str(exc),
+            })
+    return {"success": any(item["ok"] for item in results), "results": results}
 
 def scan_recent_topics() -> dict[str, Any]:
     webhook = telegram_method("getWebhookInfo").get("result") or {}
@@ -4446,6 +4502,7 @@ def panel():
         storage=storage_status(),
         default_chat_id=CHANNEL_ID,
         scan_url=url_for("scan_topics", key=key),
+        test_telegram_url=url_for("test_telegram_api", key=key),
         status_url=url_for("api_jobs", key=key),
         scheduler_dashboard_url=url_for("scheduler_dashboard_data", key=key),
         max_queue=MAX_QUEUE,
@@ -4580,6 +4637,20 @@ def delete_data_backup():
         path=safe_backup_path(request.form.get("name","")); path.unlink(missing_ok=True); msg=f"Backup {path.name} dihapus."
     except Exception as exc: msg=f"Hapus backup gagal: {exc}"
     return redirect(url_for("panel",key=request.args.get("key",""),data_message=msg)+"#dataSection")
+
+@app.post("/test-telegram-api")
+def test_telegram_api():
+    if not authorized():
+        return jsonify({"success": False, "error": "Unauthorized"}), 401
+    key = request.args.get("key", "")
+    result = test_telegram_connections()
+    parts = []
+    for item in result["results"]:
+        status = "OK" if item["ok"] else "GAGAL"
+        detail = f"@{item['bot']}" if item.get("bot") else item.get("error", "")
+        parts.append(f"{status} {item['base']} ({item['latency_ms']} ms) {detail}".strip())
+    message = "Tes Bot API: " + " | ".join(parts)
+    return redirect(url_for("panel", key=key, scan_message=message))
 
 @app.post("/scan-topics")
 def scan_topics():

@@ -1,1 +1,1 @@
-CineDrive v15.0.0 Enterprise Stable
+CineDrive v15.2.0 Enterprise Stable

@@ -1,4 +1,4 @@
-# CineDrive v15 Enterprise Stable
+# CineDrive v15.2 Enterprise Stable
 
 Versi ini menggabungkan **Single Serial Catalog**, **Supabase Canonical Database**, dan scheduler cluster yang lebih tahan terhadap job/claim lama.
 
@@ -47,3 +47,12 @@ Konfigurasi dibaca saat startup. Untuk menerapkan perubahan, lakukan redeploy; R
 3. Pastikan rahasia di atas tersedia pada setiap Railway.
 4. Redeploy semua worker.
 5. Periksa `/v15-status` pada setiap domain.
+
+
+## Perbaikan v15.2
+
+- Semua fitur Telegram, termasuk Scan Group & Topic, memakai `TELEGRAM_API_BASE`.
+- Default aman diubah menjadi `https://api.telegram.org`.
+- Jika Local Bot API tidak dapat diakses, aplikasi mencoba API resmi Telegram sebagai fallback.
+- Tombol **Tes Koneksi Bot API** menampilkan endpoint, latensi, username bot, dan error koneksi.
+- Variabel opsional: `TELEGRAM_API_FALLBACK_BASE=https://api.telegram.org`.
