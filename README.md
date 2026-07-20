@@ -35,3 +35,31 @@ Gunakan `CLUSTER_WORKER_ID` berbeda pada setiap service, misalnya `railway-1` da
 3. Atur `CLUSTER_WORKER_ID` berbeda untuk masing-masing Railway.
 4. Redeploy semua worker.
 5. Buka `/v16.1-status` dan pastikan kedua worker berstatus online.
+
+## CineDrive v16.2 — Reset / Hapus Serial
+
+Versi 16.2 menambahkan menu **Reset / Hapus Serial** pada **Menu Pengelolaan Serial**.
+
+### Reset ke E01
+
+- Mengosongkan daftar episode.
+- Menghapus referensi katalog aktif dan katalog sebelumnya.
+- Tetap mempertahankan metadata TMDB/manual, poster, season, topic, dan target Telegram.
+- Membatalkan tugas serial yang masih `QUEUED` pada worker lokal maupun antrean Supabase.
+- Menolak reset jika serial sedang aktif pada tahap download, encode, atau upload agar video tidak menjadi yatim.
+- Opsional menghapus pesan katalog aktif dari Telegram.
+- Membuat backup otomatis sebelum perubahan.
+
+### Hapus Serial
+
+Menghapus record serial dari canonical database Supabase. Pesan katalog Telegram dapat ikut dihapus melalui pilihan pada panel.
+
+### Penggunaan
+
+1. Buka `/panel?key=SECRET_KEY`.
+2. Pilih **Menu Pengelolaan Serial**.
+3. Buka **Reset / Hapus Serial**.
+4. Cari serial.
+5. Tekan **Reset ke E01** atau **Hapus Serial**, lalu konfirmasi.
+
+Endpoint status versi ini adalah `/v16.2-status`.

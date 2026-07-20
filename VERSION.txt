@@ -1,1 +1,1 @@
-CineDrive v16.1 Enterprise Automatic Failover
+CineDrive v16.2 Enterprise Serial Reset
