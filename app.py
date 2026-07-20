@@ -227,7 +227,7 @@ EPISODE_BUTTONS_PER_ROW = max(
 )
 
 
-CLUSTER_VERSION = "15.2.0"
+CLUSTER_VERSION = "15.4.0"
 
 
 def _deep_merge_cluster(remote: Any, local: Any) -> Any:
@@ -764,10 +764,23 @@ def _cluster_publish_enterprise_job(self: ClusterStore, job: dict[str, Any]) -> 
         return
     public = {
         "id": job.get("id"), "title": job.get("title"), "state": job.get("state"),
-        "overall_progress": job.get("overall_progress", 0), "message": job.get("message", ""),
+        "overall_progress": job.get("overall_progress", 0),
+        "stage_progress": job.get("stage_progress", 0),
+        "progress_detail": job.get("progress_detail", ""),
+        "eta_seconds": job.get("eta_seconds", 0),
+        "eta_human": job.get("eta_human", "-"),
+        "message": job.get("message", ""),
         "error": job.get("error"), "tmdb_id": job.get("tmdb_id"),
         "season_number": job.get("season_number"), "episode_number": job.get("episode_number"),
         "target_chat_id": job.get("target_chat_id"), "message_thread_id": job.get("message_thread_id"),
+        "topic_name": job.get("topic_name"),
+        "subtitle_info": job.get("subtitle_info"),
+        "watermark_info": job.get("watermark_info"),
+        "encode_info": job.get("encode_info"),
+        "encode_profile": job.get("encode_profile"),
+        "file_size_bytes": job.get("file_size_bytes", 0),
+        "message_id": job.get("message_id"),
+        "index_message_id": job.get("index_message_id"),
         "created_at": job.get("created_at"), "started_at": job.get("started_at"), "finished_at": job.get("finished_at"),
         # Preserve an explicit empty assignment for portable jobs.  An empty
         # assigned_worker means the global queue is waiting for any idle worker.
@@ -1016,7 +1029,8 @@ def save_discovered_topics(topics: list[dict[str, Any]]) -> None:
 
 def get_topic_options() -> list[dict[str, Any]]:
     merged: dict[tuple[str, int], dict[str, Any]] = {}
-    for item in parse_topic_options(TOPIC_OPTIONS_RAW) + load_discovered_topics():
+    # Scan may discover IDs, but explicit Railway TOPIC_OPTIONS must win names.
+    for item in load_discovered_topics() + parse_topic_options(TOPIC_OPTIONS_RAW):
         key = (
             str(item.get("chat_id") or CHANNEL_ID),
             int(item.get("thread_id") or 0),
@@ -1454,7 +1468,7 @@ PANEL_HTML = r"""
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>CineDrive Studio v15.2 Enterprise</title>
+<title>CineDrive Studio v15.4 Enterprise</title>
 
 <style>
 :root{
@@ -1556,7 +1570,7 @@ button:active{transform:translateY(0) scale(.995)}
 .scan-series-card form{margin:0}.episode-chips{display:flex;flex-wrap:wrap;gap:6px;margin:10px 0}.episode-chips span{padding:5px 8px;border-radius:999px;background:rgba(139,92,246,.18);border:1px solid rgba(139,92,246,.35);font-size:12px}.soft-line{border:0;border-top:1px solid var(--line);margin:20px 0}
 
 .data-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin:14px 0}.data-stat{padding:15px;border:1px solid var(--line);border-radius:15px;background:rgba(8,12,28,.56)}.data-stat b{display:block;font-size:24px;margin-top:5px}.action-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px}.action-grid form{margin:0}.action-grid button{margin-top:0}.danger{background:linear-gradient(135deg,#be123c,#ef4444)!important}.json-box{max-height:520px;overflow:auto;white-space:pre-wrap;word-break:break-word;background:#050814;border:1px solid var(--line);border-radius:14px;padding:14px;font:12px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace}.backup-row{display:grid;grid-template-columns:1fr auto auto;gap:8px;align-items:center;padding:10px 0;border-bottom:1px solid var(--line)}.backup-row form{margin:0}.backup-row button{margin:0;padding:9px 12px}.watermark-note{padding:12px 14px;margin:10px 0;border-radius:13px;background:rgba(6,182,212,.08);border:1px solid rgba(6,182,212,.25);color:var(--muted);font-size:13px;line-height:1.5}.notice{padding:12px 14px;border:1px solid rgba(52,211,153,.35);background:rgba(52,211,153,.08);border-radius:13px;margin:12px 0}
-.status-toolbar{display:grid;grid-template-columns:1fr auto;gap:10px;align-items:center;margin:12px 0}.status-toolbar button{margin:0;width:auto;padding:10px 15px}.status-summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:10px;margin:14px 0}.status-stat{padding:13px;border:1px solid var(--line);border-radius:14px;background:rgba(8,12,28,.56)}.status-stat b{display:block;font-size:23px;margin-top:4px}.status-job{border:1px solid var(--line);border-radius:17px;padding:15px;margin:12px 0;background:rgba(8,12,28,.58)}.status-meta{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:5px 14px;margin-top:10px}.status-badge{display:inline-block;padding:5px 9px;border-radius:999px;font-size:12px;font-weight:900;letter-spacing:.05em;background:rgba(255,255,255,.06)}.status-empty{text-align:center;padding:30px 15px;border:1px dashed var(--line);border-radius:16px}.status-updated{font-size:12px;color:var(--muted)}
+.status-toolbar{display:grid;grid-template-columns:1fr auto;gap:10px;align-items:center;margin:12px 0}.status-toolbar button{margin:0;width:auto;padding:10px 15px}.status-summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:10px;margin:14px 0}.status-stat{padding:13px;border:1px solid var(--line);border-radius:14px;background:rgba(8,12,28,.56)}.status-stat b{display:block;font-size:23px;margin-top:4px}.worker-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin:12px 0 18px}.worker-card{padding:14px;border:1px solid var(--line);border-radius:15px;background:rgba(8,12,28,.58)}.worker-head{display:flex;align-items:center;justify-content:space-between;gap:10px}.worker-dot{width:11px;height:11px;border-radius:50%;display:inline-block;margin-right:7px;background:#ef4444;box-shadow:0 0 12px rgba(239,68,68,.55)}.worker-card.online .worker-dot{background:#22c55e;box-shadow:0 0 12px rgba(34,197,94,.65)}.worker-state{font-size:12px;font-weight:900;letter-spacing:.05em}.worker-card.online .worker-state{color:#4ade80}.worker-card.offline .worker-state{color:#f87171}.status-job{border:1px solid var(--line);border-radius:17px;padding:15px;margin:12px 0;background:rgba(8,12,28,.58)}.status-meta{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:5px 14px;margin-top:10px}.status-badge{display:inline-block;padding:5px 9px;border-radius:999px;font-size:12px;font-weight:900;letter-spacing:.05em;background:rgba(255,255,255,.06)}.status-empty{text-align:center;padding:30px 15px;border:1px dashed var(--line);border-radius:16px}.status-updated{font-size:12px;color:var(--muted)}
 </style>
 </head>
 <body>
@@ -1570,7 +1584,7 @@ button:active{transform:translateY(0) scale(.995)}
 </nav>
 <div class="wrap">
   <div class="card page-section" id="homeSection">
-    <h1>🎬 CineDrive Studio v15.2 Enterprise</h1>
+    <h1>🎬 CineDrive Studio v15.4 Enterprise</h1>
     <p class="muted">Pilih menu di navigasi untuk mencari film, mengelola serial, atau melihat antrean tanpa perlu menggulir halaman panjang.</p>
     <div class="batch-help"><strong>Status penyimpanan:</strong> {% if storage.persistent %}<span class="SUCCESS">Permanen</span>{% else %}<span class="ERROR">Sementara</span>{% endif %}<br><span class="muted">Serial: {{ storage.series_path }}<br>Topic: {{ storage.topic_path }}<br>Backup: {{ storage.backup_dir }}</span>{% if storage.warning %}<p class="error">{{ storage.warning }}</p>{% endif %}</div>
   </div>
@@ -1977,6 +1991,8 @@ button:active{transform:translateY(0) scale(.995)}
     <div class="row"><div><h2 style="margin:0">📊 Status Proses Global</h2><div class="muted">Memantau pekerjaan dari seluruh Railway dan bot Telegram.</div></div><span id="statusUpdated" class="status-updated">Belum diperbarui</span></div>
     <div class="status-toolbar"><select id="statusFilter"><option value="active">Sedang diproses</option><option value="all">Semua pekerjaan</option><option value="failed">Gagal</option><option value="success">Selesai</option></select><button type="button" id="statusRefreshButton">Refresh</button></div>
     <div id="statusSummary" class="status-summary"></div>
+    <h3 style="margin-bottom:8px">🚆 Status Railway Worker</h3>
+    <div id="workerStatusGrid" class="worker-grid"><p class="muted">Memuat status worker...</p></div>
     <div id="globalJobs"><p class="muted">Memuat status global...</p></div>
   </div>
 
@@ -2071,7 +2087,9 @@ async function refreshJobs(){
    const p=`<div class="progress"><div style="width:${pct}%"></div></div>
             <div class="muted">Total ${pct.toFixed(1)}% · Tahap ${stagePct.toFixed(1)}%</div>${detail}`;
    return `<div class="job"><div class="row"><strong>${esc(j.title)}</strong><span class="state ${esc(j.state)}">${esc(j.state)}</span></div>
-   <p class="muted">${esc(j.message)}</p>${p}<div class="muted">File: ${esc(j.file_size_human)}</div>
+   <p class="muted">${esc(j.message)}</p>${p}
+   ${j.processing_worker?`<div class="muted">Worker proses: <strong>${esc(j.processing_worker)}</strong>${j.processing_on_other_worker?` · diproses di Railway lain`:""}</div>`:""}
+   <div class="muted">File: ${esc(j.file_size_human||"-")}</div>
    ${j.season_number?`<div class="muted">Season ${esc(j.season_number)} · Episode ${esc(j.episode_number)}</div>`:""}
    <div class="muted">Tujuan: ${esc(j.target_chat_id||"-")} → ${esc(j.topic_name||"General")} ${j.message_thread_id?`(ID ${esc(j.message_thread_id)})`:""}</div>
    <div class="muted">Subtitle: ${esc(j.subtitle_info||"-")}</div>
@@ -2088,7 +2106,7 @@ const schedulerDashboardUrl={{ scheduler_dashboard_url|tojson }};
 const activeGlobalStates=new Set(["QUEUED","ASSIGNED","CLAIMED","DOWNLOADING","PROCESSING","PREPARING","READY","UPLOADING"]);
 function fmtDuration(seconds){seconds=Math.max(0,Number(seconds||0));const h=Math.floor(seconds/3600),m=Math.floor((seconds%3600)/60),sec=Math.floor(seconds%60);return h?`${h}j ${m}m`:m?`${m}m ${sec}d`:`${sec}d`}
 async function refreshGlobalStatus(){
- const box=document.getElementById("globalJobs"),summary=document.getElementById("statusSummary"),updated=document.getElementById("statusUpdated");
+ const box=document.getElementById("globalJobs"),summary=document.getElementById("statusSummary"),updated=document.getElementById("statusUpdated"),workerGrid=document.getElementById("workerStatusGrid");
  if(!box)return;
  try{
   const r=await fetch(schedulerDashboardUrl,{cache:"no-store"}),d=await r.json();
@@ -2098,7 +2116,15 @@ async function refreshGlobalStatus(){
   if(filter==="active")rows=rows.filter(j=>activeGlobalStates.has(String(j.state)));
   if(filter==="failed")rows=rows.filter(j=>String(j.state)==="ERROR");
   if(filter==="success")rows=rows.filter(j=>String(j.state)==="SUCCESS");
-  summary.innerHTML=`<div class="status-stat"><span class="muted">Aktif</span><b>${esc(d.active_count)}</b></div><div class="status-stat"><span class="muted">Menunggu</span><b>${esc(d.queued_count)}</b></div><div class="status-stat"><span class="muted">Selesai</span><b>${esc(d.success_count)}</b></div><div class="status-stat"><span class="muted">Gagal</span><b>${esc(d.error_count)}</b></div><div class="status-stat"><span class="muted">Worker</span><b>${esc(d.worker_count)}</b></div>`;
+  summary.innerHTML=`<div class="status-stat"><span class="muted">Aktif</span><b>${esc(d.active_count)}</b></div><div class="status-stat"><span class="muted">Menunggu</span><b>${esc(d.queued_count)}</b></div><div class="status-stat"><span class="muted">Selesai</span><b>${esc(d.success_count)}</b></div><div class="status-stat"><span class="muted">Gagal</span><b>${esc(d.error_count)}</b></div><div class="status-stat"><span class="muted">Worker online</span><b>${esc(d.online_worker_count||0)}</b></div><div class="status-stat"><span class="muted">Worker offline</span><b>${esc(d.offline_worker_count||0)}</b></div>`;
+  const workerRows=Array.isArray(d.worker_statuses)?d.worker_statuses:[];
+  if(workerGrid){
+    workerGrid.innerHTML=workerRows.length?workerRows.map(w=>{
+      const state=w.online?"online":"offline";
+      const age=Number(w.age_seconds||0)<60?`${Number(w.age_seconds||0)} detik lalu`:fmtDuration(Number(w.age_seconds||0))+" lalu";
+      return `<div class="worker-card ${state}"><div class="worker-head"><strong><span class="worker-dot"></span>${esc(w.worker_id)}</strong><span class="worker-state">${esc(w.status)}</span></div><div class="muted" style="margin-top:8px">Versi: <strong>${esc(w.version||"-")}</strong></div><div class="muted">Terakhir aktif: <strong>${esc(age)}</strong></div><div class="muted">Job aktif: <strong>${esc(w.active_job_count||0)}</strong>${w.active_job_title?` · ${esc(w.active_job_title)}`:""}</div><div class="muted">CPU terdeteksi: <strong>${esc(w.cpu_count||"-")}</strong></div></div>`;
+    }).join(""):`<div class="status-empty"><strong>Belum ada heartbeat worker.</strong><div class="muted">Pastikan Supabase dan CLUSTER_WORKER_ID sudah benar.</div></div>`;
+  }
   updated.textContent=`Diperbarui ${new Date().toLocaleTimeString()}`;
   if(!rows.length){box.innerHTML=`<div class="status-empty"><strong>Tidak ada pekerjaan pada filter ini.</strong><div class="muted">Status akan muncul otomatis ketika ada proses baru.</div></div>`;return}
   box.innerHTML=rows.map(j=>{
@@ -4322,9 +4348,49 @@ def scheduler_dashboard_data():
         item.setdefault("job_id", item.get("id"))
         item.setdefault("assigned_worker", item.get("worker_id"))
         item.setdefault("bot_username", (item.get("bot_identity") or {}).get("username") if isinstance(item.get("bot_identity"), dict) else "")
+    worker_rows = cluster_store.workers() if cluster_store.enabled else []
+    worker_statuses: list[dict[str, Any]] = []
+    now_epoch = time.time()
+    online_threshold = max(60, int(os.getenv("WORKER_OFFLINE_SECONDS", "90") or "90"))
+    for raw_worker in worker_rows:
+        if not isinstance(raw_worker, dict):
+            continue
+        worker = dict(raw_worker)
+        worker_id = str(worker.get("worker_id") or worker.get("updated_by") or "").strip()
+        last_seen = str(worker.get("last_seen") or worker.get("updated_at") or "")
+        last_seen_epoch = 0.0
+        try:
+            last_seen_epoch = time.mktime(time.strptime(last_seen[:19], "%Y-%m-%dT%H:%M:%S"))
+        except Exception:
+            last_seen_epoch = 0.0
+        age_seconds = int(max(0, now_epoch - last_seen_epoch)) if last_seen_epoch else 999999
+        online = age_seconds <= online_threshold
+        current_jobs = [
+            job for job in rows
+            if str(job.get("assigned_worker") or job.get("worker_id") or "") == worker_id
+            and str(job.get("state") or "") in active_states
+        ]
+        worker_statuses.append({
+            "worker_id": worker_id or "unknown-worker",
+            "hostname": worker.get("hostname") or "-",
+            "version": worker.get("version") or "-",
+            "last_seen": last_seen,
+            "age_seconds": age_seconds,
+            "online": online,
+            "status": "ONLINE" if online else "OFFLINE",
+            "active_job_count": len(current_jobs),
+            "active_job_title": str((current_jobs[0] if current_jobs else {}).get("title") or ""),
+            "cpu_count": ((worker.get("metadata") or {}).get("cpu_count") if isinstance(worker.get("metadata"), dict) else None),
+        })
+    worker_statuses.sort(key=lambda item: (not item["online"], item["worker_id"]))
     return jsonify({
         "success": True, "version": CLUSTER_VERSION, "namespace": cluster_store.namespace,
-        "worker_id": cluster_store.worker_id, "worker_count": len(_scheduler_worker_ids()),
+        "worker_id": cluster_store.worker_id,
+        "worker_count": len(worker_statuses),
+        "online_worker_count": sum(1 for item in worker_statuses if item["online"]),
+        "offline_worker_count": sum(1 for item in worker_statuses if not item["online"]),
+        "worker_offline_seconds": online_threshold,
+        "worker_statuses": worker_statuses,
         "active_count": sum(1 for x in rows if str(x.get("state")) in active_states),
         "queued_count": sum(1 for x in rows if str(x.get("state")) in {"QUEUED", "ASSIGNED", "CLAIMED"}),
         "success_count": sum(1 for x in rows if str(x.get("state")) == "SUCCESS"),
@@ -5258,11 +5324,85 @@ def api_series():
     })
 
 
+def _panel_global_jobs() -> list[dict[str, Any]]:
+    """Merge local submission cards with the authoritative shared job state.
+
+    A job submitted through this panel may be claimed by another Railway. The
+    lightweight local record therefore must not remain QUEUED when Supabase says
+    the same job is already PROCESSING/UPLOADING/SUCCESS on another worker.
+    """
+    local_rows = get_jobs_snapshot()
+    shared_rows = cluster_store.enterprise_jobs() if cluster_store.enabled else []
+    shared_by_id = {
+        str(item.get("id") or item.get("job_id") or ""): dict(item)
+        for item in shared_rows
+        if isinstance(item, dict) and str(item.get("id") or item.get("job_id") or "")
+    }
+
+    merged_rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    authoritative_fields = {
+        "state", "message", "error", "overall_progress", "stage_progress",
+        "progress_detail", "eta_seconds", "eta_human", "started_at",
+        "finished_at", "assigned_worker", "worker_id", "scheduler_status",
+        "bot", "message_id", "index_message_id", "file_size_bytes",
+    }
+    for local in local_rows:
+        row = dict(local)
+        job_id = str(row.get("id") or row.get("job_id") or "")
+        remote = shared_by_id.get(job_id)
+        if remote:
+            for field in authoritative_fields:
+                if field in remote and remote.get(field) is not None:
+                    row[field] = remote.get(field)
+            # Fill metadata that may exist only in one side.
+            for field, value in remote.items():
+                if field not in row or row.get(field) in (None, "", 0, "-"):
+                    row[field] = value
+        worker = str(row.get("assigned_worker") or row.get("worker_id") or "")
+        row["processing_on_other_worker"] = bool(
+            worker and worker != cluster_store.worker_id
+            and str(row.get("state") or "") not in {"QUEUED", "SUCCESS", "ERROR"}
+        )
+        row["current_panel_worker"] = cluster_store.worker_id
+        row["processing_worker"] = worker
+        if row["processing_on_other_worker"]:
+            row["message"] = (
+                f"Sedang diproses di {worker}. "
+                + str(row.get("message") or "")
+            ).strip()
+        merged_rows.append(row)
+        seen.add(job_id)
+
+    # Also show jobs created from another panel when they are active globally.
+    active_states = {"QUEUED", "ASSIGNED", "CLAIMED", "DOWNLOADING", "PROCESSING", "PREPARING", "READY", "UPLOADING"}
+    for remote in shared_rows:
+        job_id = str(remote.get("id") or remote.get("job_id") or "")
+        if not job_id or job_id in seen or str(remote.get("state") or "") not in active_states:
+            continue
+        row = dict(remote)
+        worker = str(row.get("assigned_worker") or row.get("worker_id") or "")
+        row["processing_on_other_worker"] = bool(worker and worker != cluster_store.worker_id)
+        row["current_panel_worker"] = cluster_store.worker_id
+        row["processing_worker"] = worker
+        merged_rows.append(row)
+
+    merged_rows.sort(
+        key=lambda item: float(item.get("finished_at") or item.get("started_at") or item.get("created_at") or 0),
+        reverse=True,
+    )
+    return merged_rows[:MAX_QUEUE]
+
+
 @app.get("/api/jobs")
 def api_jobs():
     if not authorized():
         return jsonify({"success": False, "error": "Unauthorized"}), 401
-    return jsonify({"success": True, "jobs": get_jobs_snapshot()})
+    return jsonify({
+        "success": True,
+        "worker_id": cluster_store.worker_id,
+        "jobs": _panel_global_jobs(),
+    })
 
 
 def _global_sync_loop() -> None:

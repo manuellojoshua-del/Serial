@@ -1,1 +1,1 @@
-CineDrive v15.2.0 Enterprise Stable
+CineDrive v15.4.0 Enterprise Worker Monitor

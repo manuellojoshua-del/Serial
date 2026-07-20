@@ -1,4 +1,4 @@
-# CineDrive v15.2 Enterprise Stable
+# CineDrive v15.4 Enterprise Worker Monitor
 
 Versi ini menggabungkan **Single Serial Catalog**, **Supabase Canonical Database**, dan scheduler cluster yang lebih tahan terhadap job/claim lama.
 
@@ -56,3 +56,22 @@ Konfigurasi dibaca saat startup. Untuk menerapkan perubahan, lakukan redeploy; R
 - Jika Local Bot API tidak dapat diakses, aplikasi mencoba API resmi Telegram sebagai fallback.
 - Tombol **Tes Koneksi Bot API** menampilkan endpoint, latensi, username bot, dan error koneksi.
 - Variabel opsional: `TELEGRAM_API_FALLBACK_BASE=https://api.telegram.org`.
+
+
+## Perbaikan v15.3
+
+- Panel **Antrean & status** menggabungkan job lokal dengan status authoritative Supabase.
+- Job yang dikirim dari Railway-2 tetapi diklaim Railway-1 langsung berubah dari `QUEUED` menjadi status proses sebenarnya.
+- Panel menampilkan `Worker proses` dan penanda `diproses di Railway lain`.
+- Progress, tahap, ETA, detail, ukuran file, bot, serta message ID dipublikasikan lintas Railway.
+- Job aktif yang dibuat dari panel Railway lain ikut terlihat.
+- Nama dari `TOPIC_OPTIONS` sekarang lebih diprioritaskan daripada nama generik hasil scan seperti `Topic 3`.
+
+
+## Perbaikan v15.4
+
+- Panel Status menampilkan setiap Railway sebagai **ONLINE** atau **OFFLINE**.
+- Worker dianggap offline jika heartbeat tidak diperbarui selama 90 detik.
+- Menampilkan waktu terakhir aktif, versi aplikasi, jumlah job aktif, judul job yang sedang diproses, dan CPU terdeteksi.
+- Ringkasan menampilkan jumlah worker online dan offline.
+- Batas offline dapat diubah melalui `WORKER_OFFLINE_SECONDS`, misalnya `120`.
