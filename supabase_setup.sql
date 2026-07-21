@@ -86,6 +86,3 @@ notify pgrst, 'reload schema';
 -- CineDrive v16 Smart Catalog uses record_type='lock' with keys prefixed
 -- smart-catalog: and stores catalog metadata inside the canonical 'series'
 -- document. No additional table or column is required.
-
--- CineDrive v16.2 Serial Manager uses the existing canonical 'series' document.
--- Reset/delete operations replace that document exactly; no new table is required.

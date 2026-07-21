@@ -231,7 +231,7 @@ EPISODE_BUTTONS_PER_ROW = max(
 )
 
 
-CLUSTER_VERSION = "16.2.0"
+CLUSTER_VERSION = "16.2.2"
 
 
 def _deep_merge_cluster(remote: Any, local: Any) -> Any:
@@ -275,6 +275,10 @@ V161_FAILOVER_ENABLED = os.getenv("V161_FAILOVER_ENABLED", "1").strip().lower() 
 V161_WORKER_OFFLINE_SECONDS = max(60, int(os.getenv("V161_WORKER_OFFLINE_SECONDS", os.getenv("WORKER_OFFLINE_SECONDS", "90")) or "90"))
 V161_FAILOVER_GRACE_SECONDS = max(15, int(os.getenv("V161_FAILOVER_GRACE_SECONDS", "30") or "30"))
 V161_FAILOVER_PROCESSING_JOBS = os.getenv("V161_FAILOVER_PROCESSING_JOBS", "1").strip().lower() in {"1", "true", "yes", "on"}
+# CineDrive v16.2.2 Worker Cleanup
+V1622_WORKER_CLEANUP_ENABLED = os.getenv("V1622_WORKER_CLEANUP_ENABLED", "1").strip().lower() in {"1", "true", "yes", "on"}
+V1622_WORKER_DELETE_AFTER_SECONDS = max(3600, int(os.getenv("V1622_WORKER_DELETE_AFTER_SECONDS", "21600") or "21600"))
+V1622_SHOW_OFFLINE_WORKERS_DEFAULT = os.getenv("V1622_SHOW_OFFLINE_WORKERS_DEFAULT", "0").strip().lower() in {"1", "true", "yes", "on"}
 V161_FAILOVER_STATES = {"ASSIGNED", "CLAIMED", "DOWNLOADING", "PROCESSING", "PREPARING", "READY", "UPLOADING"}
 SCHEDULER_WAKE_EVENT = threading.Event()
 
@@ -653,6 +657,27 @@ class ClusterStore:
             self.last_error = f"workers: {exc}"
             print(f"[CLUSTER] workers ERROR: {exc}", flush=True)
             return []
+
+    def delete_worker(self, worker_id: str) -> bool:
+        """Delete a stale worker heartbeat record from Supabase."""
+        if not (self.enabled and worker_id):
+            return False
+        try:
+            response = requests.delete(
+                self._endpoint("cinedrive_cluster"),
+                headers=self._headers("return=minimal"),
+                params={
+                    "namespace": f"eq.{self.namespace}",
+                    "bucket": "eq.workers",
+                    "item_key": f"eq.{worker_id}",
+                },
+                timeout=20,
+            )
+            response.raise_for_status()
+            return True
+        except Exception as exc:
+            self.last_error = f"delete worker {worker_id}: {exc}"
+            return False
 
     def status(self) -> dict[str, Any]:
         heartbeat_ok = self.heartbeat()
@@ -1638,7 +1663,7 @@ button:active{transform:translateY(0) scale(.995)}
 .scan-series-card form{margin:0}.episode-chips{display:flex;flex-wrap:wrap;gap:6px;margin:10px 0}.episode-chips span{padding:5px 8px;border-radius:999px;background:rgba(139,92,246,.18);border:1px solid rgba(139,92,246,.35);font-size:12px}.soft-line{border:0;border-top:1px solid var(--line);margin:20px 0}
 
 .data-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin:14px 0}.data-stat{padding:15px;border:1px solid var(--line);border-radius:15px;background:rgba(8,12,28,.56)}.data-stat b{display:block;font-size:24px;margin-top:5px}.action-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px}.action-grid form{margin:0}.action-grid button{margin-top:0}.danger{background:linear-gradient(135deg,#be123c,#ef4444)!important}.json-box{max-height:520px;overflow:auto;white-space:pre-wrap;word-break:break-word;background:#050814;border:1px solid var(--line);border-radius:14px;padding:14px;font:12px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace}.backup-row{display:grid;grid-template-columns:1fr auto auto;gap:8px;align-items:center;padding:10px 0;border-bottom:1px solid var(--line)}.backup-row form{margin:0}.backup-row button{margin:0;padding:9px 12px}.watermark-note{padding:12px 14px;margin:10px 0;border-radius:13px;background:rgba(6,182,212,.08);border:1px solid rgba(6,182,212,.25);color:var(--muted);font-size:13px;line-height:1.5}.notice{padding:12px 14px;border:1px solid rgba(52,211,153,.35);background:rgba(52,211,153,.08);border-radius:13px;margin:12px 0}
-.status-toolbar{display:grid;grid-template-columns:1fr auto;gap:10px;align-items:center;margin:12px 0}.status-toolbar button{margin:0;width:auto;padding:10px 15px}.status-summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:10px;margin:14px 0}.status-stat{padding:13px;border:1px solid var(--line);border-radius:14px;background:rgba(8,12,28,.56)}.status-stat b{display:block;font-size:23px;margin-top:4px}.worker-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin:12px 0 18px}.worker-card{padding:14px;border:1px solid var(--line);border-radius:15px;background:rgba(8,12,28,.58)}.worker-head{display:flex;align-items:center;justify-content:space-between;gap:10px}.worker-dot{width:11px;height:11px;border-radius:50%;display:inline-block;margin-right:7px;background:#ef4444;box-shadow:0 0 12px rgba(239,68,68,.55)}.worker-card.online .worker-dot{background:#22c55e;box-shadow:0 0 12px rgba(34,197,94,.65)}.worker-state{font-size:12px;font-weight:900;letter-spacing:.05em}.worker-card.online .worker-state{color:#4ade80}.worker-card.offline .worker-state{color:#f87171}.status-job{border:1px solid var(--line);border-radius:17px;padding:15px;margin:12px 0;background:rgba(8,12,28,.58)}.status-meta{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:5px 14px;margin-top:10px}.status-badge{display:inline-block;padding:5px 9px;border-radius:999px;font-size:12px;font-weight:900;letter-spacing:.05em;background:rgba(255,255,255,.06)}.status-empty{text-align:center;padding:30px 15px;border:1px dashed var(--line);border-radius:16px}.status-updated{font-size:12px;color:var(--muted)}
+.status-toolbar{display:grid;grid-template-columns:1fr auto auto;gap:10px;align-items:center;margin:12px 0}.status-toolbar button{margin:0;width:auto;padding:10px 15px}.status-summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:10px;margin:14px 0}.status-stat{padding:13px;border:1px solid var(--line);border-radius:14px;background:rgba(8,12,28,.56)}.status-stat b{display:block;font-size:23px;margin-top:4px}.worker-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin:12px 0 18px}.worker-card{padding:14px;border:1px solid var(--line);border-radius:15px;background:rgba(8,12,28,.58)}.worker-head{display:flex;align-items:center;justify-content:space-between;gap:10px}.worker-dot{width:11px;height:11px;border-radius:50%;display:inline-block;margin-right:7px;background:#ef4444;box-shadow:0 0 12px rgba(239,68,68,.55)}.worker-card.online .worker-dot{background:#22c55e;box-shadow:0 0 12px rgba(34,197,94,.65)}.worker-state{font-size:12px;font-weight:900;letter-spacing:.05em}.worker-card.online .worker-state{color:#4ade80}.worker-card.offline .worker-state{color:#f87171}.status-job{border:1px solid var(--line);border-radius:17px;padding:15px;margin:12px 0;background:rgba(8,12,28,.58)}.status-meta{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:5px 14px;margin-top:10px}.status-badge{display:inline-block;padding:5px 9px;border-radius:999px;font-size:12px;font-weight:900;letter-spacing:.05em;background:rgba(255,255,255,.06)}.status-empty{text-align:center;padding:30px 15px;border:1px dashed var(--line);border-radius:16px}.status-updated{font-size:12px;color:var(--muted)}
 </style>
 </head>
 <body>
@@ -2089,7 +2114,7 @@ button:active{transform:translateY(0) scale(.995)}
 
   <div class="card page-section" id="statusSection">
     <div class="row"><div><h2 style="margin:0">📊 Status Proses Global</h2><div class="muted">Memantau pekerjaan dari seluruh Railway dan bot Telegram.</div></div><span id="statusUpdated" class="status-updated">Belum diperbarui</span></div>
-    <div class="status-toolbar"><select id="statusFilter"><option value="active">Sedang diproses</option><option value="all">Semua pekerjaan</option><option value="failed">Gagal</option><option value="success">Selesai</option></select><button type="button" id="statusRefreshButton">Refresh</button></div>
+    <div class="status-toolbar"><select id="statusFilter"><option value="active">Sedang diproses</option><option value="all">Semua pekerjaan</option><option value="failed">Gagal</option><option value="success">Selesai</option></select><button type="button" id="toggleOfflineWorkers">Tampilkan Offline</button><button type="button" id="statusRefreshButton">Refresh</button></div>
     <div id="statusSummary" class="status-summary"></div>
     <h3 style="margin-bottom:8px">🚆 Status Railway Worker</h3>
     <div id="workerStatusGrid" class="worker-grid"><p class="muted">Memuat status worker...</p></div>
@@ -2217,13 +2242,19 @@ async function refreshGlobalStatus(){
   if(filter==="failed")rows=rows.filter(j=>String(j.state)==="ERROR");
   if(filter==="success")rows=rows.filter(j=>String(j.state)==="SUCCESS");
   summary.innerHTML=`<div class="status-stat"><span class="muted">Aktif</span><b>${esc(d.active_count)}</b></div><div class="status-stat"><span class="muted">Menunggu</span><b>${esc(d.queued_count)}</b></div><div class="status-stat"><span class="muted">Selesai</span><b>${esc(d.success_count)}</b></div><div class="status-stat"><span class="muted">Gagal</span><b>${esc(d.error_count)}</b></div><div class="status-stat"><span class="muted">Worker online</span><b>${esc(d.online_worker_count||0)}</b></div><div class="status-stat"><span class="muted">Worker offline</span><b>${esc(d.offline_worker_count||0)}</b></div>`;
-  const workerRows=Array.isArray(d.worker_statuses)?d.worker_statuses:[];
+  const allWorkerRows=Array.isArray(d.worker_statuses)?d.worker_statuses:[];
+  const showOffline=window.cineShowOfflineWorkers===true;
+  const workerRows=showOffline?allWorkerRows:allWorkerRows.filter(w=>w.online);
+  const toggleOffline=document.getElementById("toggleOfflineWorkers");
+  if(toggleOffline){
+    toggleOffline.textContent=showOffline?"Sembunyikan Offline":`Tampilkan Offline (${Number(d.offline_worker_count||0)})`;
+  }
   if(workerGrid){
     workerGrid.innerHTML=workerRows.length?workerRows.map(w=>{
       const state=w.online?"online":"offline";
       const age=Number(w.age_seconds||0)<60?`${Number(w.age_seconds||0)} detik lalu`:fmtDuration(Number(w.age_seconds||0))+" lalu";
       return `<div class="worker-card ${state}"><div class="worker-head"><strong><span class="worker-dot"></span>${esc(w.worker_id)}</strong><span class="worker-state">${esc(w.status)}</span></div><div class="muted" style="margin-top:8px">Versi: <strong>${esc(w.version||"-")}</strong></div><div class="muted">Terakhir aktif: <strong>${esc(age)}</strong></div><div class="muted">Job aktif: <strong>${esc(w.active_job_count||0)}</strong>${w.active_job_title?` · ${esc(w.active_job_title)}`:""}</div><div class="muted">CPU terdeteksi: <strong>${esc(w.cpu_count||"-")}</strong></div></div>`;
-    }).join(""):`<div class="status-empty"><strong>Belum ada heartbeat worker.</strong><div class="muted">Pastikan Supabase dan CLUSTER_WORKER_ID sudah benar.</div></div>`;
+    }).join(""):`<div class="status-empty"><strong>${showOffline?"Belum ada heartbeat worker.":"Tidak ada worker online."}</strong><div class="muted">${showOffline?"Pastikan Supabase dan CLUSTER_WORKER_ID sudah benar.":"Tekan Tampilkan Offline untuk melihat riwayat worker."}</div></div>`;
   }
   updated.textContent=`Diperbarui ${new Date().toLocaleTimeString()}`;
   if(!rows.length){box.innerHTML=`<div class="status-empty"><strong>Tidak ada pekerjaan pada filter ini.</strong><div class="muted">Status akan muncul otomatis ketika ada proses baru.</div></div>`;return}
@@ -4569,6 +4600,7 @@ def scheduler_dashboard_data():
         item.setdefault("assigned_worker", item.get("worker_id"))
         item.setdefault("bot_username", (item.get("bot_identity") or {}).get("username") if isinstance(item.get("bot_identity"), dict) else "")
     worker_rows = cluster_store.workers() if cluster_store.enabled else []
+    cleaned_worker_ids: list[str] = []
     worker_statuses: list[dict[str, Any]] = []
     now_epoch = time.time()
     online_threshold = max(60, int(os.getenv("WORKER_OFFLINE_SECONDS", "90") or "90"))
@@ -4590,6 +4622,17 @@ def scheduler_dashboard_data():
             if str(job.get("assigned_worker") or job.get("worker_id") or "") == worker_id
             and str(job.get("state") or "") in active_states
         ]
+        if (
+            V1622_WORKER_CLEANUP_ENABLED
+            and not online
+            and age_seconds >= V1622_WORKER_DELETE_AFTER_SECONDS
+            and not current_jobs
+            and worker_id
+            and worker_id != cluster_store.worker_id
+        ):
+            if cluster_store.delete_worker(worker_id):
+                cleaned_worker_ids.append(worker_id)
+                continue
         worker_statuses.append({
             "worker_id": worker_id or "unknown-worker",
             "hostname": worker.get("hostname") or "-",
@@ -4610,6 +4653,9 @@ def scheduler_dashboard_data():
         "online_worker_count": sum(1 for item in worker_statuses if item["online"]),
         "offline_worker_count": sum(1 for item in worker_statuses if not item["online"]),
         "worker_offline_seconds": online_threshold,
+        "worker_cleanup_enabled": V1622_WORKER_CLEANUP_ENABLED,
+        "worker_delete_after_seconds": V1622_WORKER_DELETE_AFTER_SECONDS,
+        "cleaned_worker_ids": cleaned_worker_ids,
         "worker_statuses": worker_statuses,
         "active_count": sum(1 for x in rows if str(x.get("state")) in active_states),
         "queued_count": sum(1 for x in rows if str(x.get("state")) in {"QUEUED", "ASSIGNED", "CLAIMED"}),
@@ -4618,6 +4664,17 @@ def scheduler_dashboard_data():
         "jobs": rows[:100], "last_error": cluster_store.last_error,
     })
 
+
+@app.get("/v16.2.2-status")
+def v1622_status():
+    return jsonify({
+        "success": True,
+        "version": CLUSTER_VERSION,
+        "worker_cleanup_enabled": V1622_WORKER_CLEANUP_ENABLED,
+        "worker_delete_after_seconds": V1622_WORKER_DELETE_AFTER_SECONDS,
+        "show_offline_workers_default": V1622_SHOW_OFFLINE_WORKERS_DEFAULT,
+        "worker_id": cluster_store.worker_id,
+    })
 
 @app.get("/v14-status")
 def v14_status():
@@ -4798,6 +4855,7 @@ def panel():
         test_telegram_url=url_for("test_telegram_api", key=key),
         status_url=url_for("api_jobs", key=key),
         scheduler_dashboard_url=url_for("scheduler_dashboard_data", key=key),
+        show_offline_workers_default=V1622_SHOW_OFFLINE_WORKERS_DEFAULT,
         max_queue=MAX_QUEUE,
         topic_options=get_topic_options(),
         scan_message=request.args.get("scan_message", ""),

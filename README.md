@@ -1,31 +1,37 @@
-# CineDrive v16.2 Enterprise Serial Manager Final
+# CineDrive v16.1 Enterprise Automatic Failover
 
-Versi ini mempertahankan **Smart Catalog v16** dan **Automatic Failover v16.1**, lalu menambahkan pengelolaan serial langsung dari panel web.
+Versi ini mempertahankan **Smart Catalog v16** dan menambahkan failover otomatis lintas Railway.
 
-## Fitur v16.2
+## Fitur v16.1
 
-- Menu **Tambah Episode ke Serial Tersimpan** sekarang menampilkan tindakan pengelolaan pada setiap kartu serial.
-- Tombol **🔄 Reset ke E01** mengosongkan episode dan referensi katalog sehingga episode berikutnya kembali E01.
-- Tombol **🗑 Hapus Serial** menghapus record serial dari database canonical Supabase.
-- Opsi menghapus katalog Telegram aktif saat reset/hapus.
-- Backup otomatis dibuat sebelum perubahan.
-- Reset/hapus ditolak ketika serial masih mempunyai tugas aktif.
-- Tugas lama yang masih QUEUED/ERROR dibatalkan.
-- Perubahan memakai operasi replace canonical agar data yang dihapus tidak muncul kembali akibat merge.
-- Endpoint status terbaru: `/v16.2-status`.
+- Heartbeat worker diperiksa dari Supabase.
+- Worker dianggap offline setelah 90 detik tanpa heartbeat, lalu menunggu grace period 30 detik.
+- Job portabel berbasis Google Drive yang masih `QUEUED`, `CLAIMED`, `DOWNLOADING`, `PROCESSING`, `READY`, atau `UPLOADING` dikembalikan ke antrean global.
+- Railway lain yang online dan tidak memiliki tugas dapat mengklaim job tersebut.
+- Lock scheduler dan lock media milik worker offline dilepas sebelum klaim ulang.
+- Panel mencatat `failover_from`, `failover_at`, `failover_count`, dan tahap terakhir sebelum gagal.
+- Job dengan subtitle/logo upload lokal tidak dapat dipindahkan karena berkas hanya ada di volume Railway asal; job tersebut ditandai `ERROR` dengan penjelasan.
+- Endpoint status: `/v16.1-status` (endpoint lama `/v16-status` dan `/v15-status` tetap tersedia).
 
-## Letak menu
+## Perilaku saat failover
 
-1. Buka `/panel?key=SECRET_KEY`.
-2. Pilih **Pengelolaan Serial**.
-3. Buka **Tambah Episode ke Serial Tersimpan**.
-4. Cari serial. Tombol **Reset ke E01** dan **Hapus Serial** berada di bawah kartu serial.
+Jika Railway mati ketika encode atau upload belum selesai, Railway lain memulai ulang job dari sumber Google Drive. File sementara hasil encode tidak dapat dilanjutkan karena storage antar Railway tidak dibagikan.
 
-## Deploy Railway
+## Variabel Railway
 
-1. Ganti seluruh isi repository dengan paket ini.
-2. Gunakan source code yang sama pada semua Railway worker.
-3. Pastikan masing-masing service mempunyai `CLUSTER_WORKER_ID` berbeda.
-4. Pastikan `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `CLUSTER_NAMESPACE`, Telegram, dan TMDB tersedia.
-5. Redeploy seluruh worker.
-6. Buka `/v16.2-status` dan pastikan versi `16.2.0` tampil.
+```env
+V161_FAILOVER_ENABLED=1
+V161_WORKER_OFFLINE_SECONDS=90
+V161_FAILOVER_GRACE_SECONDS=30
+V161_FAILOVER_PROCESSING_JOBS=1
+```
+
+Gunakan `CLUSTER_WORKER_ID` berbeda pada setiap service, misalnya `railway-1` dan `railway-2`. Semua service harus memakai `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `CLUSTER_NAMESPACE`, dan source code yang sama.
+
+## Deploy
+
+1. Ganti isi repository dengan file versi ini.
+2. Pastikan variabel Supabase dan Telegram tersedia di seluruh Railway.
+3. Atur `CLUSTER_WORKER_ID` berbeda untuk masing-masing Railway.
+4. Redeploy semua worker.
+5. Buka `/v16.1-status` dan pastikan kedua worker berstatus online.
