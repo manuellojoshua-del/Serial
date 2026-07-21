@@ -68,6 +68,9 @@ _CONFIG_KEY_MAP = {
     "scheduler.worker_offline_seconds": "V161_WORKER_OFFLINE_SECONDS",
     "scheduler.failover_grace_seconds": "V161_FAILOVER_GRACE_SECONDS",
     "scheduler.failover_processing_jobs": "V161_FAILOVER_PROCESSING_JOBS",
+    "scheduler.worker_cleanup_enabled": "V1622_WORKER_CLEANUP_ENABLED",
+    "scheduler.worker_delete_after_seconds": "V1622_WORKER_DELETE_AFTER_SECONDS",
+    "scheduler.show_offline_workers_default": "V1622_SHOW_OFFLINE_WORKERS_DEFAULT",
     "cluster.enabled": "ENTERPRISE_CLUSTER_ENABLED",
     "cluster.lock_ttl_seconds": "ENTERPRISE_LOCK_TTL_SECONDS",
     "global_database.enabled": "GLOBAL_SYNC_ENABLED",
@@ -231,7 +234,7 @@ EPISODE_BUTTONS_PER_ROW = max(
 )
 
 
-CLUSTER_VERSION = "16.2.4"
+CLUSTER_VERSION = "16.2.5"
 
 
 def _deep_merge_cluster(remote: Any, local: Any) -> Any:
@@ -276,6 +279,11 @@ V161_WORKER_OFFLINE_SECONDS = max(60, int(os.getenv("V161_WORKER_OFFLINE_SECONDS
 V161_FAILOVER_GRACE_SECONDS = max(15, int(os.getenv("V161_FAILOVER_GRACE_SECONDS", "30") or "30"))
 V161_FAILOVER_PROCESSING_JOBS = os.getenv("V161_FAILOVER_PROCESSING_JOBS", "1").strip().lower() in {"1", "true", "yes", "on"}
 V161_FAILOVER_STATES = {"ASSIGNED", "CLAIMED", "DOWNLOADING", "PROCESSING", "PREPARING", "READY", "UPLOADING"}
+# CineDrive v16.2.5 Worker Cleanup Fix
+V1622_WORKER_CLEANUP_ENABLED = os.getenv("V1622_WORKER_CLEANUP_ENABLED", "1").strip().lower() in {"1", "true", "yes", "on"}
+V1622_WORKER_DELETE_AFTER_SECONDS = max(300, int(os.getenv("V1622_WORKER_DELETE_AFTER_SECONDS", "1800") or "1800"))
+V1622_SHOW_OFFLINE_WORKERS_DEFAULT = os.getenv("V1622_SHOW_OFFLINE_WORKERS_DEFAULT", "0").strip().lower() in {"1", "true", "yes", "on"}
+WORKER_CLEANUP_INTERVAL_SECONDS = max(60, min(600, int(os.getenv("V1622_WORKER_CLEANUP_INTERVAL_SECONDS", "120") or "120")))
 SCHEDULER_WAKE_EVENT = threading.Event()
 
 # CineDrive v13 Enterprise
@@ -2089,7 +2097,7 @@ button:active{transform:translateY(0) scale(.995)}
 
   <div class="card page-section" id="statusSection">
     <div class="row"><div><h2 style="margin:0">📊 Status Proses Global</h2><div class="muted">Memantau pekerjaan dari seluruh Railway dan bot Telegram.</div></div><span id="statusUpdated" class="status-updated">Belum diperbarui</span></div>
-    <div class="status-toolbar"><select id="statusFilter"><option value="active">Sedang diproses</option><option value="all">Semua pekerjaan</option><option value="failed">Gagal</option><option value="success">Selesai</option></select><button type="button" id="statusRefreshButton">Refresh</button></div>
+    <div class="status-toolbar"><select id="statusFilter"><option value="active">Sedang diproses</option><option value="all">Semua pekerjaan</option><option value="failed">Gagal</option><option value="success">Selesai</option></select><button type="button" id="toggleOfflineWorkers">Tampilkan Offline</button><button type="button" id="statusRefreshButton">Refresh</button></div>
     <div id="statusSummary" class="status-summary"></div>
     <h3 style="margin-bottom:8px">🚆 Status Railway Worker</h3>
     <div id="workerStatusGrid" class="worker-grid"><p class="muted">Memuat status worker...</p></div>
@@ -2223,13 +2231,15 @@ async function queueAction(jobId, action){
 }
 
 const schedulerDashboardUrl={{ scheduler_dashboard_url|tojson }};
+let showOfflineWorkers={{ show_offline_workers_default|tojson }};
 const activeGlobalStates=new Set(["QUEUED","ASSIGNED","CLAIMED","DOWNLOADING","PROCESSING","PREPARING","READY","UPLOADING"]);
 function fmtDuration(seconds){seconds=Math.max(0,Number(seconds||0));const h=Math.floor(seconds/3600),m=Math.floor((seconds%3600)/60),sec=Math.floor(seconds%60);return h?`${h}j ${m}m`:m?`${m}m ${sec}d`:`${sec}d`}
 async function refreshGlobalStatus(){
  const box=document.getElementById("globalJobs"),summary=document.getElementById("statusSummary"),updated=document.getElementById("statusUpdated"),workerGrid=document.getElementById("workerStatusGrid");
  if(!box)return;
  try{
-  const r=await fetch(schedulerDashboardUrl,{cache:"no-store"}),d=await r.json();
+  const dashboardUrl=schedulerDashboardUrl+(schedulerDashboardUrl.includes("?")?"&":"?")+"show_offline="+(showOfflineWorkers?"1":"0");
+  const r=await fetch(dashboardUrl,{cache:"no-store"}),d=await r.json();
   if(!d.success){box.innerHTML=`<p class="error">${esc(d.error||"Gagal mengambil status")}</p>`;return}
   const filter=document.getElementById("statusFilter")?.value||"active";
   let rows=Array.isArray(d.jobs)?d.jobs:[];
@@ -2255,6 +2265,7 @@ async function refreshGlobalStatus(){
  }catch(e){box.innerHTML=`<p class="error">${esc(e)}</p>`}
 }
 document.getElementById("statusRefreshButton")?.addEventListener("click",refreshGlobalStatus);
+document.getElementById("toggleOfflineWorkers")?.addEventListener("click",function(){showOfflineWorkers=!showOfflineWorkers;this.textContent=showOfflineWorkers?"Sembunyikan Offline":"Tampilkan Offline";refreshGlobalStatus();});
 document.getElementById("statusFilter")?.addEventListener("change",refreshGlobalStatus);
 
 const seriesSearch = document.getElementById("seriesSearch");
@@ -4049,9 +4060,88 @@ def _v15_cleanup_stale_records() -> dict[str, int]:
     return result
 
 
+def _delete_worker_record(worker_id: str) -> bool:
+    """Delete a stale worker heartbeat row from Supabase by both supported identities."""
+    if not (cluster_store.enabled and worker_id):
+        return False
+    response = requests.delete(
+        cluster_store._endpoint("cinedrive_cluster"),
+        headers=cluster_store._headers("return=representation"),
+        params={
+            "namespace": f"eq.{cluster_store.namespace}",
+            "record_type": "eq.worker",
+            "record_key": f"eq.{worker_id}",
+        },
+        timeout=25,
+    )
+    response.raise_for_status()
+    try:
+        rows = response.json()
+    except ValueError:
+        rows = []
+    # Legacy rows may only be addressable through bucket/item_key.
+    legacy = requests.delete(
+        cluster_store._endpoint("cinedrive_cluster"),
+        headers=cluster_store._headers("return=representation"),
+        params={
+            "namespace": f"eq.{cluster_store.namespace}",
+            "bucket": "eq.workers",
+            "item_key": f"eq.{worker_id}",
+        },
+        timeout=25,
+    )
+    legacy.raise_for_status()
+    try:
+        legacy_rows = legacy.json()
+    except ValueError:
+        legacy_rows = []
+    return bool(rows or legacy_rows)
+
+
+def _cleanup_stale_workers() -> dict[str, Any]:
+    """Remove workers offline beyond the configured age after failover has cleared jobs."""
+    result: dict[str, Any] = {"checked": 0, "deleted": [], "skipped_active": []}
+    if not (V1622_WORKER_CLEANUP_ENABLED and cluster_store.enabled):
+        return result
+    now_epoch = time.time()
+    active_states = {"ASSIGNED", "CLAIMED", "DOWNLOADING", "PROCESSING", "PREPARING", "READY", "UPLOADING"}
+    shared_jobs = _scheduler_latest_rows(cluster_store.enterprise_jobs())
+    for worker in cluster_store.workers():
+        if not isinstance(worker, dict):
+            continue
+        worker_id = str(worker.get("worker_id") or "").strip()
+        if not worker_id or worker_id == cluster_store.worker_id:
+            continue
+        result["checked"] += 1
+        stamp = _parse_cluster_timestamp(worker.get("last_seen") or worker.get("updated_at"))
+        age = int(max(0, now_epoch - stamp)) if stamp else 999999
+        if age < V1622_WORKER_DELETE_AFTER_SECONDS:
+            continue
+        active_jobs = [
+            job for job in shared_jobs
+            if str(job.get("assigned_worker") or job.get("worker_id") or "") == worker_id
+            and str(job.get("state") or "") in active_states
+        ]
+        if active_jobs:
+            result["skipped_active"].append({"worker_id": worker_id, "jobs": len(active_jobs), "age_seconds": age})
+            continue
+        if _delete_worker_record(worker_id):
+            result["deleted"].append({"worker_id": worker_id, "age_seconds": age})
+            print(f"[WORKER-CLEANUP] deleted worker={worker_id} age={age}s", flush=True)
+    return result
+
+
 def v15_maintenance_worker() -> None:
+    last_worker_cleanup = 0.0
     while True:
         _v15_cleanup_stale_records()
+        if time.time() - last_worker_cleanup >= WORKER_CLEANUP_INTERVAL_SECONDS:
+            try:
+                _cleanup_stale_workers()
+            except Exception as exc:
+                cluster_store.last_error = f"worker-cleanup: {exc}"
+                print(f"[WORKER-CLEANUP] ERROR: {exc}", flush=True)
+            last_worker_cleanup = time.time()
         time.sleep(V15_CLEANUP_INTERVAL_SECONDS)
 
 
@@ -4588,8 +4678,14 @@ def scheduler_dashboard_data():
         item.setdefault("job_id", item.get("id"))
         item.setdefault("assigned_worker", item.get("worker_id"))
         item.setdefault("bot_username", (item.get("bot_identity") or {}).get("username") if isinstance(item.get("bot_identity"), dict) else "")
+    cleanup_result = {"checked": 0, "deleted": [], "skipped_active": []}
+    if V1622_WORKER_CLEANUP_ENABLED:
+        try:
+            cleanup_result = _cleanup_stale_workers()
+        except Exception as exc:
+            cluster_store.last_error = f"worker-cleanup-dashboard: {exc}"
     worker_rows = cluster_store.workers() if cluster_store.enabled else []
-    worker_statuses: list[dict[str, Any]] = []
+    worker_statuses_all: list[dict[str, Any]] = []
     now_epoch = time.time()
     online_threshold = max(60, int(os.getenv("WORKER_OFFLINE_SECONDS", "90") or "90"))
     for raw_worker in worker_rows:
@@ -4610,7 +4706,7 @@ def scheduler_dashboard_data():
             if str(job.get("assigned_worker") or job.get("worker_id") or "") == worker_id
             and str(job.get("state") or "") in active_states
         ]
-        worker_statuses.append({
+        worker_statuses_all.append({
             "worker_id": worker_id or "unknown-worker",
             "hostname": worker.get("hostname") or "-",
             "version": worker.get("version") or "-",
@@ -4622,14 +4718,19 @@ def scheduler_dashboard_data():
             "active_job_title": str((current_jobs[0] if current_jobs else {}).get("title") or ""),
             "cpu_count": ((worker.get("metadata") or {}).get("cpu_count") if isinstance(worker.get("metadata"), dict) else None),
         })
-    worker_statuses.sort(key=lambda item: (not item["online"], item["worker_id"]))
+    worker_statuses_all.sort(key=lambda item: (not item["online"], item["worker_id"]))
+    show_offline = request.args.get("show_offline", "1" if V1622_SHOW_OFFLINE_WORKERS_DEFAULT else "0").strip().lower() in {"1", "true", "yes", "on"}
+    worker_statuses = worker_statuses_all if show_offline else [item for item in worker_statuses_all if item["online"]]
     return jsonify({
         "success": True, "version": CLUSTER_VERSION, "namespace": cluster_store.namespace,
         "worker_id": cluster_store.worker_id,
-        "worker_count": len(worker_statuses),
-        "online_worker_count": sum(1 for item in worker_statuses if item["online"]),
-        "offline_worker_count": sum(1 for item in worker_statuses if not item["online"]),
+        "worker_count": len(worker_statuses_all),
+        "online_worker_count": sum(1 for item in worker_statuses_all if item["online"]),
+        "offline_worker_count": sum(1 for item in worker_statuses_all if not item["online"]),
         "worker_offline_seconds": online_threshold,
+        "worker_delete_after_seconds": V1622_WORKER_DELETE_AFTER_SECONDS,
+        "show_offline_workers": show_offline,
+        "worker_cleanup": cleanup_result,
         "worker_statuses": worker_statuses,
         "active_count": sum(1 for x in rows if str(x.get("state")) in active_states),
         "queued_count": sum(1 for x in rows if str(x.get("state")) in {"QUEUED", "ASSIGNED", "CLAIMED"}),
@@ -4818,6 +4919,7 @@ def panel():
         test_telegram_url=url_for("test_telegram_api", key=key),
         status_url=url_for("api_jobs", key=key),
         scheduler_dashboard_url=url_for("scheduler_dashboard_data", key=key),
+        show_offline_workers_default=V1622_SHOW_OFFLINE_WORKERS_DEFAULT,
         max_queue=MAX_QUEUE,
         topic_options=get_topic_options(),
         scan_message=request.args.get("scan_message", ""),
@@ -5973,6 +6075,17 @@ def queue_recover_job(job_id: str):
         })
     except Exception as exc:
         return jsonify({"success": False, "error": str(exc)}), 409
+
+
+@app.get("/v16.2.5-status")
+def v1625_status():
+    return jsonify({
+        "success": True, "version": CLUSTER_VERSION,
+        "feature": "Worker Cleanup Fix", "worker_id": cluster_store.worker_id,
+        "cleanup_enabled": V1622_WORKER_CLEANUP_ENABLED,
+        "delete_after_seconds": V1622_WORKER_DELETE_AFTER_SECONDS,
+        "show_offline_default": V1622_SHOW_OFFLINE_WORKERS_DEFAULT,
+    })
 
 
 @app.get("/v16.2.4-status")

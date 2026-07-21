@@ -35,7 +35,10 @@
     "failover_enabled": true,
     "worker_offline_seconds": 90,
     "failover_grace_seconds": 30,
-    "failover_processing_jobs": true
+    "failover_processing_jobs": true,
+    "worker_cleanup_enabled": true,
+    "worker_delete_after_seconds": 1800,
+    "show_offline_workers_default": false
   },
   "cluster": {
     "enabled": true,

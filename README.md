@@ -1,36 +1,33 @@
-# CineDrive v16.2.3 Queue Manager
+# CineDrive v16.2.5 Worker Cleanup Fix
 
-Versi ini mempertahankan Smart Catalog, Automatic Failover, Serial Manager, dan Worker Cleanup, serta menambahkan pengelolaan antrean langsung dari panel web.
+Versi ini mempertahankan Queue Recovery v16.2.4 dan memperbaiki pembersihan heartbeat Railway yang sudah offline.
 
-## Fitur Queue Manager
+## Perbaikan
 
-Pada kartu di menu **Antrean** tersedia:
+- Variabel `V1622_*` sekarang benar-benar dibaca oleh aplikasi.
+- Worker offline disembunyikan dari halaman Status secara default.
+- Tombol **Tampilkan Offline** tersedia pada halaman Status.
+- Worker offline lebih dari batas waktu dihapus dari Supabase jika tidak mempunyai job aktif.
+- Worker yang masih mempunyai job aktif tidak dihapus; failover diberi kesempatan memindahkan job terlebih dahulu.
+- Cleanup berjalan di maintenance worker dan juga diverifikasi ketika dashboard status dibuka.
 
-- **Proses Sekarang** untuk job `QUEUED`. Permintaan tetap mematuhi urutan episode dan kapasitas worker.
-- **Antrekan Ulang** untuk job `ERROR` jika payload Google Drive masih tersedia.
-- **Hapus Antrean** untuk job `QUEUED`, `ERROR`, atau `SUCCESS`.
+## Variabel Railway
 
-Penghapusan membersihkan record lokal, antrean proses lokal, lock klaim scheduler, dan record `enterprise-job` di Supabase. Job yang sedang `CLAIMED`, `DOWNLOADING`, `PROCESSING`, `PREPARING`, `READY`, atau `UPLOADING` ditolak agar proses aktif tidak rusak.
+```env
+V1622_WORKER_CLEANUP_ENABLED=1
+V1622_WORKER_DELETE_AFTER_SECONDS=1800
+V1622_SHOW_OFFLINE_WORKERS_DEFAULT=0
+V1622_WORKER_CLEANUP_INTERVAL_SECONDS=120
+```
 
-## Endpoint status
+`1800` detik berarti 30 menit. Setelah mengubah variabel, lakukan Redeploy semua service yang memakai source ini.
 
-`/v16.2.3-status`
+## Pemeriksaan
 
-## Deploy Railway
+Buka `/v16.2.5-status`. Nilai `cleanup_enabled` harus `true` dan `delete_after_seconds` harus `1800`.
 
-1. Letakkan semua file ini langsung di root repository.
-2. Deploy source yang sama ke semua worker Railway.
-3. Gunakan `CLUSTER_WORKER_ID` berbeda pada setiap worker.
-4. Buka endpoint `/v16.2.3-status` dan pastikan versi `16.2.3`.
-5. Buka menu **Antrean** dan refresh halaman.
+Log cleanup menggunakan awalan:
 
-Tidak diperlukan perubahan tabel Supabase.
-
-## v16.2.4 Queue Recovery
-
-- Tombol `🔓 Buka Blokir` muncul pada job serial `QUEUED` mulai Episode 2.
-- Menghapus record job episode sebelumnya yang berstatus tidak aktif dan masih menghalangi scheduler.
-- Menolak recovery bila episode sebelumnya masih `DOWNLOADING`, `PROCESSING`, `READY`, atau `UPLOADING`.
-- Setelah recovery, job saat ini dikembalikan ke antrean global dan scheduler dibangunkan.
-- Gunakan hanya jika episode sebelumnya sudah benar-benar berhasil tersedia di Telegram.
-- Endpoint status: `/v16.2.4-status`.
+```text
+[WORKER-CLEANUP]
+```
