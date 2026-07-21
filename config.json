@@ -54,10 +54,5 @@
     "e02plus_compact": true,
     "delete_previous_after_success": true,
     "clickable_episode_links": true
-  },
-  "worker_cleanup": {
-    "enabled": true,
-    "delete_after_seconds": 21600,
-    "show_offline_default": false
   }
 }

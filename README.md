@@ -1,37 +1,27 @@
-# CineDrive v16.1 Enterprise Automatic Failover
+# CineDrive v16.2.3 Queue Manager
 
-Versi ini mempertahankan **Smart Catalog v16** dan menambahkan failover otomatis lintas Railway.
+Versi ini mempertahankan Smart Catalog, Automatic Failover, Serial Manager, dan Worker Cleanup, serta menambahkan pengelolaan antrean langsung dari panel web.
 
-## Fitur v16.1
+## Fitur Queue Manager
 
-- Heartbeat worker diperiksa dari Supabase.
-- Worker dianggap offline setelah 90 detik tanpa heartbeat, lalu menunggu grace period 30 detik.
-- Job portabel berbasis Google Drive yang masih `QUEUED`, `CLAIMED`, `DOWNLOADING`, `PROCESSING`, `READY`, atau `UPLOADING` dikembalikan ke antrean global.
-- Railway lain yang online dan tidak memiliki tugas dapat mengklaim job tersebut.
-- Lock scheduler dan lock media milik worker offline dilepas sebelum klaim ulang.
-- Panel mencatat `failover_from`, `failover_at`, `failover_count`, dan tahap terakhir sebelum gagal.
-- Job dengan subtitle/logo upload lokal tidak dapat dipindahkan karena berkas hanya ada di volume Railway asal; job tersebut ditandai `ERROR` dengan penjelasan.
-- Endpoint status: `/v16.1-status` (endpoint lama `/v16-status` dan `/v15-status` tetap tersedia).
+Pada kartu di menu **Antrean** tersedia:
 
-## Perilaku saat failover
+- **Proses Sekarang** untuk job `QUEUED`. Permintaan tetap mematuhi urutan episode dan kapasitas worker.
+- **Antrekan Ulang** untuk job `ERROR` jika payload Google Drive masih tersedia.
+- **Hapus Antrean** untuk job `QUEUED`, `ERROR`, atau `SUCCESS`.
 
-Jika Railway mati ketika encode atau upload belum selesai, Railway lain memulai ulang job dari sumber Google Drive. File sementara hasil encode tidak dapat dilanjutkan karena storage antar Railway tidak dibagikan.
+Penghapusan membersihkan record lokal, antrean proses lokal, lock klaim scheduler, dan record `enterprise-job` di Supabase. Job yang sedang `CLAIMED`, `DOWNLOADING`, `PROCESSING`, `PREPARING`, `READY`, atau `UPLOADING` ditolak agar proses aktif tidak rusak.
 
-## Variabel Railway
+## Endpoint status
 
-```env
-V161_FAILOVER_ENABLED=1
-V161_WORKER_OFFLINE_SECONDS=90
-V161_FAILOVER_GRACE_SECONDS=30
-V161_FAILOVER_PROCESSING_JOBS=1
-```
+`/v16.2.3-status`
 
-Gunakan `CLUSTER_WORKER_ID` berbeda pada setiap service, misalnya `railway-1` dan `railway-2`. Semua service harus memakai `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `CLUSTER_NAMESPACE`, dan source code yang sama.
+## Deploy Railway
 
-## Deploy
+1. Letakkan semua file ini langsung di root repository.
+2. Deploy source yang sama ke semua worker Railway.
+3. Gunakan `CLUSTER_WORKER_ID` berbeda pada setiap worker.
+4. Buka endpoint `/v16.2.3-status` dan pastikan versi `16.2.3`.
+5. Buka menu **Antrean** dan refresh halaman.
 
-1. Ganti isi repository dengan file versi ini.
-2. Pastikan variabel Supabase dan Telegram tersedia di seluruh Railway.
-3. Atur `CLUSTER_WORKER_ID` berbeda untuk masing-masing Railway.
-4. Redeploy semua worker.
-5. Buka `/v16.1-status` dan pastikan kedua worker berstatus online.
+Tidak diperlukan perubahan tabel Supabase.

@@ -231,7 +231,7 @@ EPISODE_BUTTONS_PER_ROW = max(
 )
 
 
-CLUSTER_VERSION = "16.2.2"
+CLUSTER_VERSION = "16.2.3"
 
 
 def _deep_merge_cluster(remote: Any, local: Any) -> Any:
@@ -275,10 +275,6 @@ V161_FAILOVER_ENABLED = os.getenv("V161_FAILOVER_ENABLED", "1").strip().lower() 
 V161_WORKER_OFFLINE_SECONDS = max(60, int(os.getenv("V161_WORKER_OFFLINE_SECONDS", os.getenv("WORKER_OFFLINE_SECONDS", "90")) or "90"))
 V161_FAILOVER_GRACE_SECONDS = max(15, int(os.getenv("V161_FAILOVER_GRACE_SECONDS", "30") or "30"))
 V161_FAILOVER_PROCESSING_JOBS = os.getenv("V161_FAILOVER_PROCESSING_JOBS", "1").strip().lower() in {"1", "true", "yes", "on"}
-# CineDrive v16.2.2 Worker Cleanup
-V1622_WORKER_CLEANUP_ENABLED = os.getenv("V1622_WORKER_CLEANUP_ENABLED", "1").strip().lower() in {"1", "true", "yes", "on"}
-V1622_WORKER_DELETE_AFTER_SECONDS = max(3600, int(os.getenv("V1622_WORKER_DELETE_AFTER_SECONDS", "21600") or "21600"))
-V1622_SHOW_OFFLINE_WORKERS_DEFAULT = os.getenv("V1622_SHOW_OFFLINE_WORKERS_DEFAULT", "0").strip().lower() in {"1", "true", "yes", "on"}
 V161_FAILOVER_STATES = {"ASSIGNED", "CLAIMED", "DOWNLOADING", "PROCESSING", "PREPARING", "READY", "UPLOADING"}
 SCHEDULER_WAKE_EVENT = threading.Event()
 
@@ -657,27 +653,6 @@ class ClusterStore:
             self.last_error = f"workers: {exc}"
             print(f"[CLUSTER] workers ERROR: {exc}", flush=True)
             return []
-
-    def delete_worker(self, worker_id: str) -> bool:
-        """Delete a stale worker heartbeat record from Supabase."""
-        if not (self.enabled and worker_id):
-            return False
-        try:
-            response = requests.delete(
-                self._endpoint("cinedrive_cluster"),
-                headers=self._headers("return=minimal"),
-                params={
-                    "namespace": f"eq.{self.namespace}",
-                    "bucket": "eq.workers",
-                    "item_key": f"eq.{worker_id}",
-                },
-                timeout=20,
-            )
-            response.raise_for_status()
-            return True
-        except Exception as exc:
-            self.last_error = f"delete worker {worker_id}: {exc}"
-            return False
 
     def status(self) -> dict[str, Any]:
         heartbeat_ok = self.heartbeat()
@@ -1561,7 +1536,7 @@ PANEL_HTML = r"""
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>CineDrive Studio v16.2 Enterprise Serial Reset</title>
+<title>CineDrive Studio v16.2.3 Queue Manager</title>
 
 <style>
 :root{
@@ -1663,7 +1638,7 @@ button:active{transform:translateY(0) scale(.995)}
 .scan-series-card form{margin:0}.episode-chips{display:flex;flex-wrap:wrap;gap:6px;margin:10px 0}.episode-chips span{padding:5px 8px;border-radius:999px;background:rgba(139,92,246,.18);border:1px solid rgba(139,92,246,.35);font-size:12px}.soft-line{border:0;border-top:1px solid var(--line);margin:20px 0}
 
 .data-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin:14px 0}.data-stat{padding:15px;border:1px solid var(--line);border-radius:15px;background:rgba(8,12,28,.56)}.data-stat b{display:block;font-size:24px;margin-top:5px}.action-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px}.action-grid form{margin:0}.action-grid button{margin-top:0}.danger{background:linear-gradient(135deg,#be123c,#ef4444)!important}.json-box{max-height:520px;overflow:auto;white-space:pre-wrap;word-break:break-word;background:#050814;border:1px solid var(--line);border-radius:14px;padding:14px;font:12px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace}.backup-row{display:grid;grid-template-columns:1fr auto auto;gap:8px;align-items:center;padding:10px 0;border-bottom:1px solid var(--line)}.backup-row form{margin:0}.backup-row button{margin:0;padding:9px 12px}.watermark-note{padding:12px 14px;margin:10px 0;border-radius:13px;background:rgba(6,182,212,.08);border:1px solid rgba(6,182,212,.25);color:var(--muted);font-size:13px;line-height:1.5}.notice{padding:12px 14px;border:1px solid rgba(52,211,153,.35);background:rgba(52,211,153,.08);border-radius:13px;margin:12px 0}
-.status-toolbar{display:grid;grid-template-columns:1fr auto auto;gap:10px;align-items:center;margin:12px 0}.status-toolbar button{margin:0;width:auto;padding:10px 15px}.status-summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:10px;margin:14px 0}.status-stat{padding:13px;border:1px solid var(--line);border-radius:14px;background:rgba(8,12,28,.56)}.status-stat b{display:block;font-size:23px;margin-top:4px}.worker-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin:12px 0 18px}.worker-card{padding:14px;border:1px solid var(--line);border-radius:15px;background:rgba(8,12,28,.58)}.worker-head{display:flex;align-items:center;justify-content:space-between;gap:10px}.worker-dot{width:11px;height:11px;border-radius:50%;display:inline-block;margin-right:7px;background:#ef4444;box-shadow:0 0 12px rgba(239,68,68,.55)}.worker-card.online .worker-dot{background:#22c55e;box-shadow:0 0 12px rgba(34,197,94,.65)}.worker-state{font-size:12px;font-weight:900;letter-spacing:.05em}.worker-card.online .worker-state{color:#4ade80}.worker-card.offline .worker-state{color:#f87171}.status-job{border:1px solid var(--line);border-radius:17px;padding:15px;margin:12px 0;background:rgba(8,12,28,.58)}.status-meta{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:5px 14px;margin-top:10px}.status-badge{display:inline-block;padding:5px 9px;border-radius:999px;font-size:12px;font-weight:900;letter-spacing:.05em;background:rgba(255,255,255,.06)}.status-empty{text-align:center;padding:30px 15px;border:1px dashed var(--line);border-radius:16px}.status-updated{font-size:12px;color:var(--muted)}
+.status-toolbar{display:grid;grid-template-columns:1fr auto;gap:10px;align-items:center;margin:12px 0}.status-toolbar button{margin:0;width:auto;padding:10px 15px}.status-summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:10px;margin:14px 0}.status-stat{padding:13px;border:1px solid var(--line);border-radius:14px;background:rgba(8,12,28,.56)}.status-stat b{display:block;font-size:23px;margin-top:4px}.worker-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin:12px 0 18px}.worker-card{padding:14px;border:1px solid var(--line);border-radius:15px;background:rgba(8,12,28,.58)}.worker-head{display:flex;align-items:center;justify-content:space-between;gap:10px}.worker-dot{width:11px;height:11px;border-radius:50%;display:inline-block;margin-right:7px;background:#ef4444;box-shadow:0 0 12px rgba(239,68,68,.55)}.worker-card.online .worker-dot{background:#22c55e;box-shadow:0 0 12px rgba(34,197,94,.65)}.worker-state{font-size:12px;font-weight:900;letter-spacing:.05em}.worker-card.online .worker-state{color:#4ade80}.worker-card.offline .worker-state{color:#f87171}.status-job{border:1px solid var(--line);border-radius:17px;padding:15px;margin:12px 0;background:rgba(8,12,28,.58)}.status-meta{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:5px 14px;margin-top:10px}.status-badge{display:inline-block;padding:5px 9px;border-radius:999px;font-size:12px;font-weight:900;letter-spacing:.05em;background:rgba(255,255,255,.06)}.status-empty{text-align:center;padding:30px 15px;border:1px dashed var(--line);border-radius:16px}.status-updated{font-size:12px;color:var(--muted)}
 </style>
 </head>
 <body>
@@ -1677,7 +1652,7 @@ button:active{transform:translateY(0) scale(.995)}
 </nav>
 <div class="wrap">
   <div class="card page-section" id="homeSection">
-    <h1>🎬 CineDrive Studio v16.2 Enterprise Serial Reset</h1>
+    <h1>🎬 CineDrive Studio v16.2.3 Queue Manager</h1>
     <p class="muted">Pilih menu di navigasi untuk mencari film, mengelola serial, atau melihat antrean tanpa perlu menggulir halaman panjang.</p>
     <div class="batch-help"><strong>Status penyimpanan:</strong> {% if storage.persistent %}<span class="SUCCESS">Permanen</span>{% else %}<span class="ERROR">Sementara</span>{% endif %}<br><span class="muted">Serial: {{ storage.series_path }}<br>Topic: {{ storage.topic_path }}<br>Backup: {{ storage.backup_dir }}</span>{% if storage.warning %}<p class="error">{{ storage.warning }}</p>{% endif %}</div>
   </div>
@@ -2114,7 +2089,7 @@ button:active{transform:translateY(0) scale(.995)}
 
   <div class="card page-section" id="statusSection">
     <div class="row"><div><h2 style="margin:0">📊 Status Proses Global</h2><div class="muted">Memantau pekerjaan dari seluruh Railway dan bot Telegram.</div></div><span id="statusUpdated" class="status-updated">Belum diperbarui</span></div>
-    <div class="status-toolbar"><select id="statusFilter"><option value="active">Sedang diproses</option><option value="all">Semua pekerjaan</option><option value="failed">Gagal</option><option value="success">Selesai</option></select><button type="button" id="toggleOfflineWorkers">Tampilkan Offline</button><button type="button" id="statusRefreshButton">Refresh</button></div>
+    <div class="status-toolbar"><select id="statusFilter"><option value="active">Sedang diproses</option><option value="all">Semua pekerjaan</option><option value="failed">Gagal</option><option value="success">Selesai</option></select><button type="button" id="statusRefreshButton">Refresh</button></div>
     <div id="statusSummary" class="status-summary"></div>
     <h3 style="margin-bottom:8px">🚆 Status Railway Worker</h3>
     <div id="workerStatusGrid" class="worker-grid"><p class="muted">Memuat status worker...</p></div>
@@ -2222,9 +2197,27 @@ async function refreshJobs(){
    <div class="muted">Encode: ${esc(j.encode_info||j.encode_profile||"-")}</div>
    ${j.message_id?`<div class="muted">Episode Message ID: ${esc(j.message_id)}</div>`:""}
    ${j.index_message_id?`<div class="muted">Posting utama serial: ${esc(j.index_message_id)}</div>`:""}
-   ${j.error?`<p class="error">${esc(j.error)}</p>`:""}</div>`;
+   ${j.error?`<p class="error">${esc(j.error)}</p>`:""}
+   <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
+     ${String(j.state)==="QUEUED"?`<button type="button" onclick="queueAction('${esc(j.id||j.job_id)}','process')" style="flex:1">▶️ Proses Sekarang</button>`:""}
+     ${String(j.state)==="ERROR"?`<button type="button" onclick="queueAction('${esc(j.id||j.job_id)}','retry')" style="flex:1">🔄 Antrekan Ulang</button>`:""}
+     ${["QUEUED","ERROR","SUCCESS"].includes(String(j.state))?`<button type="button" class="danger" onclick="queueAction('${esc(j.id||j.job_id)}','delete')" style="flex:1">🗑 Hapus Antrean</button>`:""}
+   </div></div>`;
   }).join("");
  }catch(e){box.innerHTML=`<p class="error">${esc(e)}</p>`}
+}
+
+async function queueAction(jobId, action){
+  const labels={delete:'menghapus antrean',retry:'mengantrekan ulang',process:'memproses sekarang'};
+  if(action==='delete'&&!confirm('Hapus antrean ini dari database global?'))return;
+  try{
+    const response=await fetch(`/api/jobs/${encodeURIComponent(jobId)}/${action}?key=${encodeURIComponent({{ key|tojson }})}`,{method:'POST',cache:'no-store'});
+    const data=await response.json();
+    if(!response.ok||!data.success){alert(data.error||`Gagal ${labels[action]||'menjalankan aksi'}.`);return}
+    alert(data.message||'Berhasil.');
+    await refreshJobs();
+    if(document.getElementById('statusSection')?.classList.contains('active'))await refreshGlobalStatus();
+  }catch(error){alert(String(error))}
 }
 
 const schedulerDashboardUrl={{ scheduler_dashboard_url|tojson }};
@@ -2242,19 +2235,13 @@ async function refreshGlobalStatus(){
   if(filter==="failed")rows=rows.filter(j=>String(j.state)==="ERROR");
   if(filter==="success")rows=rows.filter(j=>String(j.state)==="SUCCESS");
   summary.innerHTML=`<div class="status-stat"><span class="muted">Aktif</span><b>${esc(d.active_count)}</b></div><div class="status-stat"><span class="muted">Menunggu</span><b>${esc(d.queued_count)}</b></div><div class="status-stat"><span class="muted">Selesai</span><b>${esc(d.success_count)}</b></div><div class="status-stat"><span class="muted">Gagal</span><b>${esc(d.error_count)}</b></div><div class="status-stat"><span class="muted">Worker online</span><b>${esc(d.online_worker_count||0)}</b></div><div class="status-stat"><span class="muted">Worker offline</span><b>${esc(d.offline_worker_count||0)}</b></div>`;
-  const allWorkerRows=Array.isArray(d.worker_statuses)?d.worker_statuses:[];
-  const showOffline=window.cineShowOfflineWorkers===true;
-  const workerRows=showOffline?allWorkerRows:allWorkerRows.filter(w=>w.online);
-  const toggleOffline=document.getElementById("toggleOfflineWorkers");
-  if(toggleOffline){
-    toggleOffline.textContent=showOffline?"Sembunyikan Offline":`Tampilkan Offline (${Number(d.offline_worker_count||0)})`;
-  }
+  const workerRows=Array.isArray(d.worker_statuses)?d.worker_statuses:[];
   if(workerGrid){
     workerGrid.innerHTML=workerRows.length?workerRows.map(w=>{
       const state=w.online?"online":"offline";
       const age=Number(w.age_seconds||0)<60?`${Number(w.age_seconds||0)} detik lalu`:fmtDuration(Number(w.age_seconds||0))+" lalu";
       return `<div class="worker-card ${state}"><div class="worker-head"><strong><span class="worker-dot"></span>${esc(w.worker_id)}</strong><span class="worker-state">${esc(w.status)}</span></div><div class="muted" style="margin-top:8px">Versi: <strong>${esc(w.version||"-")}</strong></div><div class="muted">Terakhir aktif: <strong>${esc(age)}</strong></div><div class="muted">Job aktif: <strong>${esc(w.active_job_count||0)}</strong>${w.active_job_title?` · ${esc(w.active_job_title)}`:""}</div><div class="muted">CPU terdeteksi: <strong>${esc(w.cpu_count||"-")}</strong></div></div>`;
-    }).join(""):`<div class="status-empty"><strong>${showOffline?"Belum ada heartbeat worker.":"Tidak ada worker online."}</strong><div class="muted">${showOffline?"Pastikan Supabase dan CLUSTER_WORKER_ID sudah benar.":"Tekan Tampilkan Offline untuk melihat riwayat worker."}</div></div>`;
+    }).join(""):`<div class="status-empty"><strong>Belum ada heartbeat worker.</strong><div class="muted">Pastikan Supabase dan CLUSTER_WORKER_ID sudah benar.</div></div>`;
   }
   updated.textContent=`Diperbarui ${new Date().toLocaleTimeString()}`;
   if(!rows.length){box.innerHTML=`<div class="status-empty"><strong>Tidak ada pekerjaan pada filter ini.</strong><div class="muted">Status akan muncul otomatis ketika ada proses baru.</div></div>`;return}
@@ -4600,7 +4587,6 @@ def scheduler_dashboard_data():
         item.setdefault("assigned_worker", item.get("worker_id"))
         item.setdefault("bot_username", (item.get("bot_identity") or {}).get("username") if isinstance(item.get("bot_identity"), dict) else "")
     worker_rows = cluster_store.workers() if cluster_store.enabled else []
-    cleaned_worker_ids: list[str] = []
     worker_statuses: list[dict[str, Any]] = []
     now_epoch = time.time()
     online_threshold = max(60, int(os.getenv("WORKER_OFFLINE_SECONDS", "90") or "90"))
@@ -4622,17 +4608,6 @@ def scheduler_dashboard_data():
             if str(job.get("assigned_worker") or job.get("worker_id") or "") == worker_id
             and str(job.get("state") or "") in active_states
         ]
-        if (
-            V1622_WORKER_CLEANUP_ENABLED
-            and not online
-            and age_seconds >= V1622_WORKER_DELETE_AFTER_SECONDS
-            and not current_jobs
-            and worker_id
-            and worker_id != cluster_store.worker_id
-        ):
-            if cluster_store.delete_worker(worker_id):
-                cleaned_worker_ids.append(worker_id)
-                continue
         worker_statuses.append({
             "worker_id": worker_id or "unknown-worker",
             "hostname": worker.get("hostname") or "-",
@@ -4653,9 +4628,6 @@ def scheduler_dashboard_data():
         "online_worker_count": sum(1 for item in worker_statuses if item["online"]),
         "offline_worker_count": sum(1 for item in worker_statuses if not item["online"]),
         "worker_offline_seconds": online_threshold,
-        "worker_cleanup_enabled": V1622_WORKER_CLEANUP_ENABLED,
-        "worker_delete_after_seconds": V1622_WORKER_DELETE_AFTER_SECONDS,
-        "cleaned_worker_ids": cleaned_worker_ids,
         "worker_statuses": worker_statuses,
         "active_count": sum(1 for x in rows if str(x.get("state")) in active_states),
         "queued_count": sum(1 for x in rows if str(x.get("state")) in {"QUEUED", "ASSIGNED", "CLAIMED"}),
@@ -4664,17 +4636,6 @@ def scheduler_dashboard_data():
         "jobs": rows[:100], "last_error": cluster_store.last_error,
     })
 
-
-@app.get("/v16.2.2-status")
-def v1622_status():
-    return jsonify({
-        "success": True,
-        "version": CLUSTER_VERSION,
-        "worker_cleanup_enabled": V1622_WORKER_CLEANUP_ENABLED,
-        "worker_delete_after_seconds": V1622_WORKER_DELETE_AFTER_SECONDS,
-        "show_offline_workers_default": V1622_SHOW_OFFLINE_WORKERS_DEFAULT,
-        "worker_id": cluster_store.worker_id,
-    })
 
 @app.get("/v14-status")
 def v14_status():
@@ -4855,7 +4816,6 @@ def panel():
         test_telegram_url=url_for("test_telegram_api", key=key),
         status_url=url_for("api_jobs", key=key),
         scheduler_dashboard_url=url_for("scheduler_dashboard_data", key=key),
-        show_offline_workers_default=V1622_SHOW_OFFLINE_WORKERS_DEFAULT,
         max_queue=MAX_QUEUE,
         topic_options=get_topic_options(),
         scan_message=request.args.get("scan_message", ""),
@@ -5812,6 +5772,158 @@ def _panel_global_jobs() -> list[dict[str, Any]]:
         reverse=True,
     )
     return merged_rows[:MAX_QUEUE]
+
+
+def _queue_find_shared_job(job_id: str) -> dict[str, Any] | None:
+    if not cluster_store.enabled:
+        return None
+    value = cluster_store.get_document(f"{ENTERPRISE_QUEUE_PREFIX}{job_id}", {})
+    return dict(value) if isinstance(value, dict) and value else None
+
+
+def _queue_delete_shared_job(job_id: str) -> None:
+    if not cluster_store.enabled:
+        return
+    response = requests.delete(
+        cluster_store._endpoint("cinedrive_cluster"),
+        headers=cluster_store._headers("return=minimal"),
+        params={
+            "namespace": f"eq.{cluster_store.namespace}",
+            "bucket": "eq.documents",
+            "item_key": f"eq.{ENTERPRISE_QUEUE_PREFIX}{job_id}",
+        },
+        timeout=25,
+    )
+    response.raise_for_status()
+
+
+def _queue_release_all_job_locks(job_id: str) -> None:
+    if not cluster_store.enabled:
+        return
+    try:
+        requests.delete(
+            cluster_store._endpoint("cinedrive_cluster"),
+            headers=cluster_store._headers("return=minimal"),
+            params={
+                "namespace": f"eq.{cluster_store.namespace}",
+                "record_type": "eq.lock",
+                "record_key": f"eq.scheduler-claim:{job_id}",
+            },
+            timeout=20,
+        ).raise_for_status()
+    except Exception as exc:
+        cluster_store.last_error = f"queue-manager release lock: {exc}"
+
+
+def _queue_local_remove(job_id: str) -> dict[str, Any] | None:
+    with queue_condition:
+        job = jobs.get(job_id)
+        if job and str(job.get("state") or "") in {"CLAIMED", "DOWNLOADING", "PROCESSING", "PREPARING", "READY", "UPLOADING"}:
+            raise RuntimeError("Tugas sedang aktif dan tidak dapat dihapus. Tunggu selesai atau matikan worker pemroses.")
+        while True:
+            try:
+                pending_jobs.remove(job_id)
+            except ValueError:
+                break
+        removed = jobs.pop(job_id, None)
+        if removed:
+            shutil.rmtree(Path(str(removed.get("work_dir") or "")), ignore_errors=True)
+        return removed
+
+
+@app.post("/api/jobs/<job_id>/delete")
+def queue_delete_job(job_id: str):
+    if not authorized():
+        return jsonify({"success": False, "error": "Unauthorized"}), 401
+    try:
+        local = jobs.get(job_id)
+        remote = _queue_find_shared_job(job_id)
+        state = str((remote or local or {}).get("state") or "")
+        if state in {"CLAIMED", "DOWNLOADING", "PROCESSING", "PREPARING", "READY", "UPLOADING"}:
+            raise RuntimeError(f"Job masih aktif dengan status {state}.")
+        _queue_local_remove(job_id)
+        _queue_release_all_job_locks(job_id)
+        _queue_delete_shared_job(job_id)
+        return jsonify({"success": True, "message": "Antrean berhasil dihapus dari panel dan Supabase."})
+    except Exception as exc:
+        return jsonify({"success": False, "error": str(exc)}), 409
+
+
+@app.post("/api/jobs/<job_id>/retry")
+def queue_retry_job(job_id: str):
+    if not authorized():
+        return jsonify({"success": False, "error": "Unauthorized"}), 401
+    try:
+        local = dict(jobs.get(job_id) or {})
+        remote = _queue_find_shared_job(job_id) or {}
+        source = local or remote
+        state = str(source.get("state") or "")
+        if state not in {"ERROR", "QUEUED"}:
+            raise RuntimeError(f"Status {state or '-'} tidak dapat diantrekan ulang.")
+        payload = source.get("scheduler_payload") if isinstance(source.get("scheduler_payload"), dict) else None
+        if not payload and local:
+            payload, local_only = _scheduler_payload(local)
+        else:
+            local_only = bool(source.get("scheduler_local_only"))
+        if not isinstance(payload, dict):
+            raise RuntimeError("Payload sumber tidak tersedia. Hapus antrean lalu tambahkan episode kembali.")
+        if local_only and not local:
+            raise RuntimeError("Job memakai file lokal pada worker lama dan tidak dapat dipindahkan.")
+        retry = dict(source)
+        retry.update({
+            "id": job_id, "state": "QUEUED", "assigned_worker": "", "worker_id": "",
+            "scheduler_status": "MANUAL_REQUEUED", "scheduler_payload": payload,
+            "message": "Diantrekan ulang oleh Queue Manager v16.2.3.",
+            "progress_detail": "Menunggu worker Railway yang kosong.", "error": None,
+            "started_at": None, "finished_at": None, "claimed_at": None,
+            "stage_progress": 0.0, "overall_progress": 0.0,
+        })
+        _queue_release_all_job_locks(job_id)
+        cluster_store.publish_enterprise_job(retry)
+        with queue_condition:
+            if job_id in jobs:
+                jobs[job_id].update(retry)
+        SCHEDULER_WAKE_EVENT.set()
+        return jsonify({"success": True, "message": "Job berhasil dikembalikan ke antrean global."})
+    except Exception as exc:
+        return jsonify({"success": False, "error": str(exc)}), 409
+
+
+@app.post("/api/jobs/<job_id>/process")
+def queue_process_job(job_id: str):
+    if not authorized():
+        return jsonify({"success": False, "error": "Unauthorized"}), 401
+    try:
+        if _scheduler_local_active_count() >= SCHEDULER_MAX_JOBS_PER_WORKER:
+            raise RuntimeError("Worker ini masih memiliki job aktif.")
+        remote = _queue_find_shared_job(job_id)
+        if not remote:
+            raise RuntimeError("Job tidak ditemukan di antrean global.")
+        if str(remote.get("state") or "") != "QUEUED":
+            raise RuntimeError("Hanya job QUEUED yang dapat diproses sekarang.")
+        blockers = _pipeline_lower_blockers(remote, job_id)
+        if blockers:
+            names = ", ".join(str(item.get("title") or item.get("id") or "episode sebelumnya") for item in blockers[:3])
+            raise RuntimeError(f"Masih diblokir episode sebelumnya: {names}.")
+        remote.update({
+            "assigned_worker": "", "worker_id": "", "preferred_worker": cluster_store.worker_id,
+            "scheduler_status": "MANUAL_PROCESS_REQUESTED",
+            "message": f"Diminta diproses sekarang oleh {cluster_store.worker_id}.",
+            "progress_detail": "Menunggu klaim scheduler pada worker online.",
+        })
+        cluster_store.publish_enterprise_job(remote)
+        SCHEDULER_WAKE_EVENT.set()
+        return jsonify({"success": True, "message": "Permintaan proses dikirim. Scheduler akan mengklaim job jika semua syarat terpenuhi."})
+    except Exception as exc:
+        return jsonify({"success": False, "error": str(exc)}), 409
+
+
+@app.get("/v16.2.3-status")
+def v1623_status():
+    return jsonify({
+        "success": True, "version": CLUSTER_VERSION,
+        "feature": "Queue Manager", "worker_id": cluster_store.worker_id,
+    })
 
 
 @app.get("/api/jobs")
