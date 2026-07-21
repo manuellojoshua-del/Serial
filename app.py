@@ -1159,31 +1159,22 @@ def save_series_store(data: dict[str, Any], reason: str = "update") -> None:
         temp_path.replace(SERIES_STORE_PATH)
         backup_series_store(normalized, reason=reason)
 
-def replace_series_store_exact(data: dict[str, Any], reason: str = "replace") -> None:
-    """Replace the canonical series document exactly, including deletions/resets.
-
-    save_series_store() intentionally merges episode maps to protect concurrent uploads.
-    Administrative reset/delete operations need exact replacement so removed episodes do
-    not return from the previous Supabase value.
-    """
+def replace_series_store(data: dict[str, Any], reason: str = "replace") -> None:
+    """Replace the canonical series document exactly, allowing reset/deletion."""
     with series_store_lock:
         SERIES_STORE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        previous = _read_local_series_store()
-        if previous:
+        current = _read_local_series_store()
+        if current:
             try:
-                backup_series_store(previous, reason=f"before-{reason}")
+                backup_series_store(current, reason=f"before-{reason}")
             except Exception:
                 pass
         normalized = _normalize_series_store(data)
         if GLOBAL_SYNC_ENABLED and cluster_store.enabled:
-            normalized = cluster_store.save_document(
-                GLOBAL_DATABASE_CANONICAL_KEY, normalized, merge=False
-            )
-            normalized = _normalize_series_store(normalized)
+            normalized = cluster_store.save_document(GLOBAL_DATABASE_CANONICAL_KEY, normalized, merge=False)
+            normalized = _normalize_series_store(cluster_store.get_document(GLOBAL_DATABASE_CANONICAL_KEY, normalized))
         temp_path = SERIES_STORE_PATH.with_suffix(".tmp")
-        temp_path.write_text(
-            json.dumps(normalized, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        temp_path.write_text(json.dumps(normalized, ensure_ascii=False, indent=2), encoding="utf-8")
         temp_path.replace(SERIES_STORE_PATH)
         backup_series_store(normalized, reason=reason)
 
@@ -1536,7 +1527,7 @@ PANEL_HTML = r"""
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>CineDrive Studio v16.2 Enterprise Serial Reset</title>
+<title>CineDrive Studio v16.2 Enterprise Serial Manager</title>
 
 <style>
 :root{
@@ -1598,6 +1589,7 @@ button:active{transform:translateY(0) scale(.995)}
 .series-card.selected{outline:2px solid var(--accent);background:rgba(139,92,246,.12)}
 .series-card img{width:76px;height:112px;object-fit:cover;border-radius:10px;float:left;margin-right:13px;box-shadow:0 10px 22px rgba(0,0,0,.35)}
 .series-card .title{font-weight:850;margin-bottom:7px}.series-card .meta{font-size:13px;color:var(--muted);line-height:1.55}
+.series-actions{display:grid;grid-template-columns:1fr 1fr;gap:8px;clear:both;padding-top:12px}.series-actions form{margin:0}.series-actions button{margin:0;padding:10px 8px;font-size:12px}.series-actions .reset{background:linear-gradient(135deg,#b45309,#f59e0b)}
 .hidden{display:none!important}
 .menu-nav{display:grid;grid-template-columns:repeat(3,1fr);gap:11px;margin:17px 0 2px}
 .menu-nav button{margin:0;background:rgba(8,12,28,.65);border:1px solid var(--line);box-shadow:none;padding:14px 10px;min-height:54px}
@@ -1652,7 +1644,7 @@ button:active{transform:translateY(0) scale(.995)}
 </nav>
 <div class="wrap">
   <div class="card page-section" id="homeSection">
-    <h1>🎬 CineDrive Studio v16.2 Enterprise Serial Reset</h1>
+    <h1>🎬 CineDrive Studio v16 Enterprise Smart Catalog</h1>
     <p class="muted">Pilih menu di navigasi untuk mencari film, mengelola serial, atau melihat antrean tanpa perlu menggulir halaman panjang.</p>
     <div class="batch-help"><strong>Status penyimpanan:</strong> {% if storage.persistent %}<span class="SUCCESS">Permanen</span>{% else %}<span class="ERROR">Sementara</span>{% endif %}<br><span class="muted">Serial: {{ storage.series_path }}<br>Topic: {{ storage.topic_path }}<br>Backup: {{ storage.backup_dir }}</span>{% if storage.warning %}<p class="error">{{ storage.warning }}</p>{% endif %}</div>
   </div>
@@ -1847,7 +1839,6 @@ button:active{transform:translateY(0) scale(.995)}
       <button type="button" data-menu-target="manualMenu">✍️ Mode Manual / Hybrid</button>
       <button type="button" data-menu-target="savedMenu">➕ Tambah Episode</button>
       <button type="button" data-menu-target="restoreMenu">♻️ Pulihkan Serial</button>
-      <button type="button" data-menu-target="resetMenu">🔄 Reset / Hapus Serial</button>
     </div>
 
   <section class="menu-section" id="manualMenu">
@@ -1933,6 +1924,18 @@ button:active{transform:translateY(0) scale(.995)}
             Episode berikutnya: E{{ "%02d"|format(item.next_episode) }}<br>
             Topic: {{ item.topic }}
           </div>
+          <div class="series-actions" onclick="event.stopPropagation()">
+            <form method="post" action="{{ reset_series_url }}" onsubmit="return confirm('Reset serial ini ke E01? Semua daftar episode dan referensi katalog akan dikosongkan. Video Telegram lama tidak dihapus.')">
+              <input type="hidden" name="series_key" value="{{ item.key }}">
+              <label style="margin:0 0 7px;font-size:11px"><input type="checkbox" name="delete_catalog" value="1" style="width:auto"> Hapus katalog aktif</label>
+              <button class="reset" type="submit">🔄 Reset ke E01</button>
+            </form>
+            <form method="post" action="{{ delete_series_url }}" onsubmit="return confirm('Hapus serial ini dari database global? Tindakan ini tidak dapat dibatalkan dari panel.')">
+              <input type="hidden" name="series_key" value="{{ item.key }}">
+              <label style="margin:0 0 7px;font-size:11px"><input type="checkbox" name="delete_catalog" value="1" style="width:auto"> Hapus katalog aktif</label>
+              <button class="danger" type="submit">🗑 Hapus Serial</button>
+            </form>
+          </div>
         </div>
         {% endfor %}
       </div>
@@ -2000,37 +2003,6 @@ button:active{transform:translateY(0) scale(.995)}
         Belum ada serial tersimpan. Buat Episode 1 dan tunggu sampai SUCCESS.
       </p>
     {% endif %}
-    </div>
-  </section>
-
-  <section class="menu-section" id="resetMenu">
-    <div class="menu-content">
-      <h3>Reset / Hapus Serial</h3>
-      <p class="muted">
-        <b>Reset</b> mengosongkan seluruh episode dan katalog sehingga serial kembali mulai dari E01,
-        tetapi metadata TMDB, poster, season, dan topic tetap disimpan. <b>Hapus</b> menghapus record serial sepenuhnya.
-      </p>
-      {% if saved_series %}
-      <label>Cari serial yang akan dikelola</label>
-      <input id="resetSeriesSearch" class="series-search" placeholder="Ketik judul serial...">
-      <div id="resetSeriesGrid" class="series-grid">
-        {% for item in saved_series %}
-        <div class="series-card clearfix reset-series-card" data-title="{{ item.title|lower }}">
-          {% if item.poster_url %}<img src="{{ item.poster_url }}" alt="Poster">{% endif %}
-          <div class="title">{{ item.title }}</div>
-          <div class="meta">Season {{ item.season }} · {{ item.episode_count }} episode<br>Topic: {{ item.topic }}</div>
-          <form method="post" action="{{ reset_series_url }}" onsubmit="return confirmSerialAction(event,this)">
-            <input type="hidden" name="series_key" value="{{ item.key }}">
-            <label style="margin-top:10px"><input type="checkbox" name="delete_catalog" value="1" checked style="width:auto"> Hapus pesan katalog aktif dari Telegram</label>
-            <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
-              <button type="submit" name="action" value="reset" data-title="{{ item.title }}" style="flex:1">🔄 Reset ke E01</button>
-              <button type="submit" name="action" value="delete" data-title="{{ item.title }}" class="danger" style="flex:1">🗑 Hapus Serial</button>
-            </div>
-          </form>
-        </div>
-        {% endfor %}
-      </div>
-      {% else %}<p class="muted">Belum ada serial tersimpan.</p>{% endif %}
     </div>
   </section>
 
@@ -2273,25 +2245,6 @@ function selectSeries(card) {
 }
 
 refreshJobs();refreshGlobalStatus();setInterval(refreshJobs,3000);setInterval(()=>{if(document.getElementById("statusSection")?.classList.contains("active"))refreshGlobalStatus()},3000);
-
-function confirmSerialAction(evt,form){
-  const submitter = evt && evt.submitter ? evt.submitter : null;
-  const action = submitter ? submitter.value : 'reset';
-  const title = submitter ? submitter.dataset.title : 'serial ini';
-  if(action === 'delete'){
-    return confirm('HAPUS PERMANEN serial "' + title + '" dari database? Data episode tidak dapat dikembalikan kecuali dari backup.');
-  }
-  return confirm('Reset "' + title + '" ke Episode 1? Semua daftar episode dan katalog aktif akan dikosongkan.');
-}
-const resetSearch=document.getElementById('resetSeriesSearch');
-if(resetSearch){
-  resetSearch.addEventListener('input',function(){
-    const q=this.value.toLowerCase().trim();
-    document.querySelectorAll('.reset-series-card').forEach(function(card){
-      card.style.display=(card.dataset.title||'').includes(q)?'block':'none';
-    });
-  });
-}
 </script>
 </body>
 </html>
@@ -4714,6 +4667,7 @@ def cluster_status():
     return jsonify(cluster_store.status())
 
 @app.get("/v16.2-status")
+@app.get("/v16.1-status")
 @app.get("/v16-status")
 @app.get("/v15-status")
 def v15_status():
@@ -4787,6 +4741,7 @@ def panel():
         manual_enqueue_url=url_for("manual_enqueue", key=key),
         add_saved_episode_url=url_for("add_saved_episode", key=key),
         reset_series_url=url_for("reset_series", key=key),
+        delete_series_url=url_for("delete_series", key=key),
         restore_series_url=url_for("restore_series", key=key),
         scan_series_url=url_for("scan_series_bot_api", key=key),
         restore_scanned_series_url=url_for("restore_scanned_series", key=key),
@@ -5331,139 +5286,104 @@ def restore_series():
         return redirect(url_for("panel", key=key, scan_message=f"Pemulihan serial gagal: {exc}"))
 
 
-def _job_matches_series(job: dict[str, Any], series_key: str, series: dict[str, Any]) -> bool:
-    if str(job.get("saved_series_key") or "") == series_key:
-        return True
-    return (
-        int(job.get("tmdb_id") or 0) == int(series.get("tmdb_id") or 0)
-        and int(job.get("season_number") or 1) == int(series.get("season_number") or 1)
-        and str(job.get("target_chat_id") or CHANNEL_ID) == str(series.get("target_chat_id") or CHANNEL_ID)
-        and int(job.get("message_thread_id") or 0) == int(series.get("message_thread_id") or 0)
-    )
+SERIES_ACTIVE_STATES = {"ASSIGNED", "CLAIMED", "DOWNLOADING", "PROCESSING", "PREPARING", "READY", "UPLOADING"}
 
+def _job_series_key(job: dict[str, Any]) -> str:
+    payload = job.get("scheduler_payload") if isinstance(job.get("scheduler_payload"), dict) else {}
+    return str(job.get("saved_series_key") or payload.get("saved_series_key") or "")
 
-def _cancel_queued_series_jobs(series_key: str, series: dict[str, Any]) -> int:
-    """Cancel only jobs that have not started; active jobs make reset unsafe."""
-    cancelled = 0
-    with queue_condition:
-        active = [
-            job for job in jobs.values()
-            if _job_matches_series(job, series_key, series)
-            and str(job.get("state") or "") in {"CLAIMED", "DOWNLOADING", "PROCESSING", "PREPARING", "READY", "UPLOADING"}
-        ]
-        if active:
-            raise RuntimeError(
-                "Serial masih memiliki tugas aktif. Tunggu proses selesai atau hentikan worker sebelum reset."
-            )
-        remove_ids = [
-            jid for jid, job in jobs.items()
-            if _job_matches_series(job, series_key, series)
-            and str(job.get("state") or "") == "QUEUED"
-        ]
-        for jid in remove_ids:
-            try:
-                pending_jobs.remove(jid)
-            except ValueError:
-                pass
-            jobs[jid].update({
-                "state": "ERROR", "message": "Dibatalkan oleh Reset Serial v16.2.",
-                "error": "Serial direset oleh admin.", "finished_at": now_ts(),
-                "scheduler_status": "CANCELLED_BY_SERIAL_RESET",
-            })
-            cluster_store.publish_enterprise_job(dict(jobs[jid]))
-            cancelled += 1
-
-    # Cancel portable Supabase jobs that are still waiting and belong to this serial.
+def _series_active_jobs(series_key: str) -> list[dict[str, Any]]:
+    found: list[dict[str, Any]] = []
+    with jobs_lock:
+        for job in jobs.values():
+            if _job_series_key(job) == series_key and str(job.get("state") or "") in SERIES_ACTIVE_STATES:
+                found.append(dict(job))
     if cluster_store.enabled:
-        for doc_key, remote in cluster_store.list_documents(ENTERPRISE_QUEUE_PREFIX).items():
-            if not isinstance(remote, dict) or str(remote.get("state") or "") != "QUEUED":
-                continue
-            if not _job_matches_series(remote, series_key, series):
-                continue
-            remote.update({
-                "state": "ERROR", "message": "Dibatalkan oleh Reset Serial v16.2.",
-                "error": "Serial direset oleh admin.", "finished_at": now_ts(),
-                "scheduler_status": "CANCELLED_BY_SERIAL_RESET",
-                "scheduler_payload": None,
-            })
-            cluster_store.save_document(doc_key, remote, merge=False)
-            cancelled += 1
-    return cancelled
+        for job in cluster_store.enterprise_jobs():
+            if _job_series_key(job) == series_key and str(job.get("state") or "") in SERIES_ACTIVE_STATES:
+                found.append(dict(job))
+    return found
 
+def _cancel_non_active_series_jobs(series_key: str, reason: str) -> int:
+    count = 0
+    with queue_condition:
+        for job in jobs.values():
+            if _job_series_key(job) == series_key and str(job.get("state") or "") in {"QUEUED", "ERROR"}:
+                job.update({"state": "CANCELLED", "scheduler_status": "CANCELLED", "message": reason, "error": reason, "finished_at": now_ts()})
+                count += 1
+        queue_condition.notify_all()
+    if cluster_store.enabled:
+        for job in cluster_store.enterprise_jobs():
+            if _job_series_key(job) == series_key and str(job.get("state") or "") in {"QUEUED", "ERROR"}:
+                job.update({"state": "CANCELLED", "scheduler_status": "CANCELLED", "message": reason, "error": reason, "finished_at": now_ts(), "scheduler_payload": None})
+                cluster_store.save_document(f"{ENTERPRISE_QUEUE_PREFIX}{job.get('id')}", job, merge=False)
+                count += 1
+    return count
 
-@app.post("/reset-series")
+def _delete_series_catalog_message(series: dict[str, Any]) -> str:
+    message_id = int(series.get("index_message_id") or 0)
+    chat_id = str(series.get("target_chat_id") or CHANNEL_ID)
+    if message_id <= 0:
+        return "Tidak ada katalog aktif."
+    telegram_post("deleteMessage", {"chat_id": chat_id, "message_id": str(message_id)}, token=CATALOG_BOT_TOKEN, try_all_bots=True)
+    return f"Katalog message_id {message_id} dihapus."
+
+@app.post("/series/reset")
 def reset_series():
-    if not authorized():
-        return jsonify({"success": False, "error": "Unauthorized"}), 401
+    if not authorized(): return jsonify({"success": False, "error": "Unauthorized"}), 401
     key = request.args.get("key", "")
     series_key = str(request.form.get("series_key") or "").strip()
-    action = str(request.form.get("action") or "reset").strip().lower()
-    delete_catalog = str(request.form.get("delete_catalog") or "") == "1"
-    if not series_key or action not in {"reset", "delete"}:
-        return redirect(url_for("panel", key=key, scan_message="Permintaan reset serial tidak valid.") + "#resetMenu")
-
-    lock_key = f"admin-series-reset:{hashlib.sha256(series_key.encode('utf-8')).hexdigest()[:32]}"
-    acquired, info = cluster_store.acquire_lock(lock_key, {"action": action, "series_key": series_key})
-    if not acquired:
-        return redirect(url_for("panel", key=key, scan_message=f"Serial sedang dikelola worker {info.get('owner') or 'lain'}.") + "#resetMenu")
-
     try:
         store = load_series_store()
         series = store.get(series_key)
-        if not isinstance(series, dict):
-            raise ValueError("Serial tidak ditemukan di database canonical.")
-        cancelled = _cancel_queued_series_jobs(series_key, series)
-        old_catalog_id = int(series.get("index_message_id") or 0)
-        target_chat_id = str(series.get("target_chat_id") or CHANNEL_ID)
-        title = str(series.get("series_title") or series.get("original_title") or "Serial")
-
-        if action == "delete":
-            store.pop(series_key, None)
-            reason = "v16.2-delete-series"
-            message = f"Serial '{title}' berhasil dihapus. {cancelled} tugas antre dibatalkan."
-        else:
-            preserved = dict(series)
-            preserved["episodes"] = {}
-            preserved["index_message_id"] = 0
-            preserved["previous_index_message_id"] = 0
-            preserved["index_type"] = ""
-            preserved["previous_index_deleted"] = True
-            preserved["reset_at"] = now_ts()
-            preserved["reset_by_worker"] = cluster_store.worker_id
-            preserved["reset_count"] = int(series.get("reset_count") or 0) + 1
-            preserved["updated_at"] = now_ts()
-            for field in ("catalog_edit_warning", "delete_warning", "catalog_recovery_warning"):
-                preserved.pop(field, None)
-            store[series_key] = preserved
-            reason = "v16.2-reset-series"
-            message = f"Serial '{title}' berhasil direset ke E01. {cancelled} tugas antre dibatalkan."
-
-        # Exact replacement is required; merge semantics would resurrect old episodes.
-        replace_series_store_exact(store, reason=reason)
-
-        warning = ""
-        if delete_catalog and old_catalog_id > 0:
-            try:
-                telegram_post(
-                    "deleteMessage",
-                    {"chat_id": target_chat_id, "message_id": str(old_catalog_id)},
-                    token=CATALOG_BOT_TOKEN, try_all_bots=True,
-                )
-            except Exception as exc:
-                warning = f" Katalog Telegram tidak dapat dihapus otomatis: {exc}"
-
-        # Release known per-series locks. A stale foreign lock will also expire normally.
-        catalog_store_key = f"{int(series.get('tmdb_id') or 0)}:{int(series.get('season_number') or 1)}:{target_chat_id}:{int(series.get('message_thread_id') or 0)}"
-        smart_key = f"smart-catalog:{catalog_store_key}"
-        scheduler_identity = _series_identity(series_key, series)
-        scheduler_key = "scheduler-series:" + hashlib.sha256(scheduler_identity.encode("utf-8")).hexdigest()[:32]
-        cluster_store.release_lock(smart_key)
-        cluster_store.release_lock(scheduler_key)
-        return redirect(url_for("panel", key=key, scan_message=message + warning) + "#resetMenu")
+        if not isinstance(series, dict): raise ValueError("Serial tidak ditemukan.")
+        active = _series_active_jobs(series_key)
+        if active:
+            raise ValueError(f"Reset ditolak: ada {len(active)} tugas aktif untuk serial ini.")
+        backup_series_store(store, reason="before-serial-reset")
+        catalog_note = "Katalog aktif dipertahankan."
+        if request.form.get("delete_catalog") == "1":
+            catalog_note = _delete_series_catalog_message(series)
+        cancelled = _cancel_non_active_series_jobs(series_key, "Dibatalkan karena serial direset ke E01.")
+        for field in ("index_message_id", "previous_index_message_id", "catalog_message_id", "previous_catalog_message_id", "index_type", "catalog_layout", "catalog_publish_mode", "catalog_edit_warning", "delete_warning"):
+            series.pop(field, None)
+        series["episodes"] = {}
+        series["reset_at"] = now_ts()
+        series["reset_by"] = cluster_store.worker_id
+        series["updated_at"] = now_ts()
+        series["catalog_version"] = CLUSTER_VERSION
+        store[series_key] = series
+        replace_series_store(store, reason="serial-reset")
+        cluster_store.release_lock(f"smart-catalog:{series_key}")
+        title = str(series.get("series_title") or "Serial")
+        return redirect(url_for("panel", key=key, scan_message=f"'{title}' berhasil direset ke E01. {catalog_note} {cancelled} antrean lama dibatalkan.") + "#serialSection")
     except Exception as exc:
-        return redirect(url_for("panel", key=key, scan_message=f"Reset serial gagal: {exc}") + "#resetMenu")
-    finally:
-        cluster_store.release_lock(lock_key)
+        return redirect(url_for("panel", key=key, scan_message=f"Reset serial gagal: {exc}") + "#serialSection")
+
+@app.post("/series/delete")
+def delete_series():
+    if not authorized(): return jsonify({"success": False, "error": "Unauthorized"}), 401
+    key = request.args.get("key", "")
+    series_key = str(request.form.get("series_key") or "").strip()
+    try:
+        store = load_series_store()
+        series = store.get(series_key)
+        if not isinstance(series, dict): raise ValueError("Serial tidak ditemukan.")
+        active = _series_active_jobs(series_key)
+        if active:
+            raise ValueError(f"Hapus ditolak: ada {len(active)} tugas aktif untuk serial ini.")
+        backup_series_store(store, reason="before-series-delete")
+        catalog_note = "Katalog aktif dipertahankan."
+        if request.form.get("delete_catalog") == "1":
+            catalog_note = _delete_series_catalog_message(series)
+        cancelled = _cancel_non_active_series_jobs(series_key, "Dibatalkan karena serial dihapus.")
+        title = str(series.get("series_title") or "Serial")
+        del store[series_key]
+        replace_series_store(store, reason="series-delete")
+        cluster_store.release_lock(f"smart-catalog:{series_key}")
+        return redirect(url_for("panel", key=key, scan_message=f"'{title}' dihapus dari database global. {catalog_note} {cancelled} antrean lama dibatalkan.") + "#serialSection")
+    except Exception as exc:
+        return redirect(url_for("panel", key=key, scan_message=f"Hapus serial gagal: {exc}") + "#serialSection")
 
 
 @app.post("/add-saved-episode")
