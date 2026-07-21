@@ -231,7 +231,7 @@ EPISODE_BUTTONS_PER_ROW = max(
 )
 
 
-CLUSTER_VERSION = "16.2.3"
+CLUSTER_VERSION = "16.2.4"
 
 
 def _deep_merge_cluster(remote: Any, local: Any) -> Any:
@@ -1536,7 +1536,7 @@ PANEL_HTML = r"""
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>CineDrive Studio v16.2.3 Queue Manager</title>
+<title>CineDrive Studio v16.2.4 Queue Recovery</title>
 
 <style>
 :root{
@@ -1652,7 +1652,7 @@ button:active{transform:translateY(0) scale(.995)}
 </nav>
 <div class="wrap">
   <div class="card page-section" id="homeSection">
-    <h1>🎬 CineDrive Studio v16.2.3 Queue Manager</h1>
+    <h1>🎬 CineDrive Studio v16.2.4 Queue Recovery</h1>
     <p class="muted">Pilih menu di navigasi untuk mencari film, mengelola serial, atau melihat antrean tanpa perlu menggulir halaman panjang.</p>
     <div class="batch-help"><strong>Status penyimpanan:</strong> {% if storage.persistent %}<span class="SUCCESS">Permanen</span>{% else %}<span class="ERROR">Sementara</span>{% endif %}<br><span class="muted">Serial: {{ storage.series_path }}<br>Topic: {{ storage.topic_path }}<br>Backup: {{ storage.backup_dir }}</span>{% if storage.warning %}<p class="error">{{ storage.warning }}</p>{% endif %}</div>
   </div>
@@ -2200,6 +2200,7 @@ async function refreshJobs(){
    ${j.error?`<p class="error">${esc(j.error)}</p>`:""}
    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
      ${String(j.state)==="QUEUED"?`<button type="button" onclick="queueAction('${esc(j.id||j.job_id)}','process')" style="flex:1">▶️ Proses Sekarang</button>`:""}
+     ${String(j.state)==="QUEUED"&&Number(j.episode_number||0)>1?`<button type="button" onclick="queueAction('${esc(j.id||j.job_id)}','recover')" style="flex:1">🔓 Buka Blokir</button>`:""}
      ${String(j.state)==="ERROR"?`<button type="button" onclick="queueAction('${esc(j.id||j.job_id)}','retry')" style="flex:1">🔄 Antrekan Ulang</button>`:""}
      ${["QUEUED","ERROR","SUCCESS"].includes(String(j.state))?`<button type="button" class="danger" onclick="queueAction('${esc(j.id||j.job_id)}','delete')" style="flex:1">🗑 Hapus Antrean</button>`:""}
    </div></div>`;
@@ -2208,8 +2209,9 @@ async function refreshJobs(){
 }
 
 async function queueAction(jobId, action){
-  const labels={delete:'menghapus antrean',retry:'mengantrekan ulang',process:'memproses sekarang'};
+  const labels={delete:'menghapus antrean',retry:'mengantrekan ulang',process:'memproses sekarang',recover:'membuka blokir episode sebelumnya'};
   if(action==='delete'&&!confirm('Hapus antrean ini dari database global?'))return;
+  if(action==='recover'&&!confirm('Buka blokir dengan menghapus record job episode sebelumnya yang gagal atau tertahan?\n\nGunakan hanya jika episode sebelumnya sudah benar-benar berhasil ada di Telegram.'))return;
   try{
     const response=await fetch(`/api/jobs/${encodeURIComponent(jobId)}/${action}?key=${encodeURIComponent({{ key|tojson }})}`,{method:'POST',cache:'no-store'});
     const data=await response.json();
@@ -5873,7 +5875,7 @@ def queue_retry_job(job_id: str):
         retry.update({
             "id": job_id, "state": "QUEUED", "assigned_worker": "", "worker_id": "",
             "scheduler_status": "MANUAL_REQUEUED", "scheduler_payload": payload,
-            "message": "Diantrekan ulang oleh Queue Manager v16.2.3.",
+            "message": "Diantrekan ulang oleh Queue Recovery v16.2.4.",
             "progress_detail": "Menunggu worker Railway yang kosong.", "error": None,
             "started_at": None, "finished_at": None, "claimed_at": None,
             "stage_progress": 0.0, "overall_progress": 0.0,
@@ -5916,6 +5918,69 @@ def queue_process_job(job_id: str):
         return jsonify({"success": True, "message": "Permintaan proses dikirim. Scheduler akan mengklaim job jika semua syarat terpenuhi."})
     except Exception as exc:
         return jsonify({"success": False, "error": str(exc)}), 409
+
+
+def _queue_delete_blocker_job(blocker: dict[str, Any]) -> str:
+    blocker_id = str(blocker.get("id") or blocker.get("job_id") or "").strip()
+    if not blocker_id:
+        raise RuntimeError("Job penghalang tidak memiliki ID.")
+    state = str(blocker.get("state") or "")
+    if state in {"CLAIMED", "DOWNLOADING", "PROCESSING", "PREPARING", "READY", "UPLOADING"}:
+        raise RuntimeError(
+            f"Episode sebelumnya masih aktif ({state}) pada "
+            f"{blocker.get('assigned_worker') or blocker.get('worker_id') or 'worker lain'}."
+        )
+    _queue_local_remove(blocker_id)
+    _queue_release_all_job_locks(blocker_id)
+    _queue_delete_shared_job(blocker_id)
+    return str(blocker.get("title") or blocker_id)
+
+
+@app.post("/api/jobs/<job_id>/recover")
+def queue_recover_job(job_id: str):
+    """Remove stale lower-episode blockers after admin confirms Telegram already contains them."""
+    if not authorized():
+        return jsonify({"success": False, "error": "Unauthorized"}), 401
+    try:
+        remote = _queue_find_shared_job(job_id)
+        if not remote:
+            raise RuntimeError("Job tidak ditemukan di antrean global.")
+        if str(remote.get("state") or "") != "QUEUED":
+            raise RuntimeError("Buka blokir hanya tersedia untuk job QUEUED.")
+        blockers = _pipeline_lower_blockers(remote, job_id)
+        if not blockers:
+            SCHEDULER_WAKE_EVENT.set()
+            return jsonify({"success": True, "message": "Tidak ada blokir episode sebelumnya. Scheduler dibangunkan kembali."})
+        removed: list[str] = []
+        for blocker in blockers:
+            removed.append(_queue_delete_blocker_job(blocker))
+        remote.update({
+            "assigned_worker": "", "worker_id": "",
+            "preferred_worker": cluster_store.worker_id,
+            "scheduler_status": "QUEUE_RECOVERY_RELEASED",
+            "message": "Blokir episode sebelumnya dilepas oleh admin.",
+            "progress_detail": "Menunggu worker online mengklaim job setelah Queue Recovery.",
+            "recovery_at": now_ts(),
+            "recovery_by": cluster_store.worker_id,
+            "recovery_removed_jobs": removed,
+        })
+        cluster_store.publish_enterprise_job(remote)
+        SCHEDULER_WAKE_EVENT.set()
+        return jsonify({
+            "success": True,
+            "message": "Blokir dilepas: " + ", ".join(removed) + ". Job sekarang menunggu klaim worker.",
+            "removed": removed,
+        })
+    except Exception as exc:
+        return jsonify({"success": False, "error": str(exc)}), 409
+
+
+@app.get("/v16.2.4-status")
+def v1624_status():
+    return jsonify({
+        "success": True, "version": CLUSTER_VERSION,
+        "feature": "Queue Recovery", "worker_id": cluster_store.worker_id,
+    })
 
 
 @app.get("/v16.2.3-status")

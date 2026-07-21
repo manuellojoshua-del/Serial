@@ -25,3 +25,12 @@ Penghapusan membersihkan record lokal, antrean proses lokal, lock klaim schedule
 5. Buka menu **Antrean** dan refresh halaman.
 
 Tidak diperlukan perubahan tabel Supabase.
+
+## v16.2.4 Queue Recovery
+
+- Tombol `🔓 Buka Blokir` muncul pada job serial `QUEUED` mulai Episode 2.
+- Menghapus record job episode sebelumnya yang berstatus tidak aktif dan masih menghalangi scheduler.
+- Menolak recovery bila episode sebelumnya masih `DOWNLOADING`, `PROCESSING`, `READY`, atau `UPLOADING`.
+- Setelah recovery, job saat ini dikembalikan ke antrean global dan scheduler dibangunkan.
+- Gunakan hanya jika episode sebelumnya sudah benar-benar berhasil tersedia di Telegram.
+- Endpoint status: `/v16.2.4-status`.
