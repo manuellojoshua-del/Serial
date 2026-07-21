@@ -231,7 +231,7 @@ EPISODE_BUTTONS_PER_ROW = max(
 )
 
 
-CLUSTER_VERSION = "16.2.1"
+CLUSTER_VERSION = "16.2.0"
 
 
 def _deep_merge_cluster(remote: Any, local: Any) -> Any:
@@ -1536,7 +1536,7 @@ PANEL_HTML = r"""
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>CineDrive Studio v16.2.1 Final Serial Manager</title>
+<title>CineDrive Studio v16.2 Enterprise Serial Reset</title>
 
 <style>
 :root{
@@ -1598,11 +1598,6 @@ button:active{transform:translateY(0) scale(.995)}
 .series-card.selected{outline:2px solid var(--accent);background:rgba(139,92,246,.12)}
 .series-card img{width:76px;height:112px;object-fit:cover;border-radius:10px;float:left;margin-right:13px;box-shadow:0 10px 22px rgba(0,0,0,.35)}
 .series-card .title{font-weight:850;margin-bottom:7px}.series-card .meta{font-size:13px;color:var(--muted);line-height:1.55}
-.series-admin-actions{clear:both;margin-top:13px;padding-top:12px;border-top:1px solid var(--line);cursor:default}
-.series-admin-label{font-size:12px;font-weight:850;color:#dbe4ff;margin-bottom:7px;text-transform:uppercase;letter-spacing:.05em}
-.series-admin-actions form{margin:0}.series-delete-catalog{display:flex;align-items:center;gap:7px;margin:5px 0 9px;font-size:12px;font-weight:650}
-.series-delete-catalog input{width:auto;margin:0}.series-admin-buttons{display:grid;grid-template-columns:1fr 1fr;gap:8px}
-.series-admin-buttons button{margin:0;padding:10px 8px;font-size:12px;min-height:42px}
 .hidden{display:none!important}
 .menu-nav{display:grid;grid-template-columns:repeat(3,1fr);gap:11px;margin:17px 0 2px}
 .menu-nav button{margin:0;background:rgba(8,12,28,.65);border:1px solid var(--line);box-shadow:none;padding:14px 10px;min-height:54px}
@@ -1657,7 +1652,7 @@ button:active{transform:translateY(0) scale(.995)}
 </nav>
 <div class="wrap">
   <div class="card page-section" id="homeSection">
-    <h1>🎬 CineDrive Studio v16.2.1 Final Serial Manager</h1>
+    <h1>🎬 CineDrive Studio v16.2 Enterprise Serial Reset</h1>
     <p class="muted">Pilih menu di navigasi untuk mencari film, mengelola serial, atau melihat antrean tanpa perlu menggulir halaman panjang.</p>
     <div class="batch-help"><strong>Status penyimpanan:</strong> {% if storage.persistent %}<span class="SUCCESS">Permanen</span>{% else %}<span class="ERROR">Sementara</span>{% endif %}<br><span class="muted">Serial: {{ storage.series_path }}<br>Topic: {{ storage.topic_path }}<br>Backup: {{ storage.backup_dir }}</span>{% if storage.warning %}<p class="error">{{ storage.warning }}</p>{% endif %}</div>
   </div>
@@ -1851,8 +1846,8 @@ button:active{transform:translateY(0) scale(.995)}
     <div class="menu-nav">
       <button type="button" data-menu-target="manualMenu">✍️ Mode Manual / Hybrid</button>
       <button type="button" data-menu-target="savedMenu">➕ Tambah Episode</button>
-      <button type="button" data-menu-target="resetMenu">🔄 Reset / Hapus Serial</button>
       <button type="button" data-menu-target="restoreMenu">♻️ Pulihkan Serial</button>
+      <button type="button" data-menu-target="resetMenu">🔄 Reset / Hapus Serial</button>
     </div>
 
   <section class="menu-section" id="manualMenu">
@@ -1926,7 +1921,7 @@ button:active{transform:translateY(0) scale(.995)}
              data-next="{{ item.next_episode }}"
              data-season="{{ item.season }}"
              data-topic="{{ item.topic }}"
-             onclick="if (!event.target.closest('.series-admin-actions')) selectSeries(this)">
+             onclick="selectSeries(this)">
           {% if item.poster_url %}
           <img src="{{ item.poster_url }}" alt="Poster">
           {% endif %}
@@ -1937,17 +1932,6 @@ button:active{transform:translateY(0) scale(.995)}
             Episode terakhir: E{{ "%02d"|format(item.last_episode) }}<br>
             Episode berikutnya: E{{ "%02d"|format(item.next_episode) }}<br>
             Topic: {{ item.topic }}
-          </div>
-          <div class="series-admin-actions" onclick="event.stopPropagation()">
-            <div class="series-admin-label">Kelola serial</div>
-            <form method="post" action="{{ reset_series_url }}" onsubmit="return confirmSerialAction(event,this)">
-              <input type="hidden" name="series_key" value="{{ item.key }}">
-              <label class="series-delete-catalog"><input type="checkbox" name="delete_catalog" value="1" checked> Hapus katalog Telegram aktif</label>
-              <div class="series-admin-buttons">
-                <button type="submit" name="action" value="reset" data-title="{{ item.title }}">🔄 Reset ke E01</button>
-                <button type="submit" name="action" value="delete" data-title="{{ item.title }}" class="danger">🗑 Hapus Serial</button>
-              </div>
-            </form>
           </div>
         </div>
         {% endfor %}
@@ -4729,7 +4713,6 @@ def v13_status():
 def cluster_status():
     return jsonify(cluster_store.status())
 
-@app.get("/v16.2.1-status")
 @app.get("/v16.2-status")
 @app.get("/v16-status")
 @app.get("/v15-status")
@@ -5383,7 +5366,7 @@ def _cancel_queued_series_jobs(series_key: str, series: dict[str, Any]) -> int:
             except ValueError:
                 pass
             jobs[jid].update({
-                "state": "ERROR", "message": "Dibatalkan oleh Reset Serial v16.2.1.",
+                "state": "ERROR", "message": "Dibatalkan oleh Reset Serial v16.2.",
                 "error": "Serial direset oleh admin.", "finished_at": now_ts(),
                 "scheduler_status": "CANCELLED_BY_SERIAL_RESET",
             })
@@ -5398,7 +5381,7 @@ def _cancel_queued_series_jobs(series_key: str, series: dict[str, Any]) -> int:
             if not _job_matches_series(remote, series_key, series):
                 continue
             remote.update({
-                "state": "ERROR", "message": "Dibatalkan oleh Reset Serial v16.2.1.",
+                "state": "ERROR", "message": "Dibatalkan oleh Reset Serial v16.2.",
                 "error": "Serial direset oleh admin.", "finished_at": now_ts(),
                 "scheduler_status": "CANCELLED_BY_SERIAL_RESET",
                 "scheduler_payload": None,
@@ -5436,7 +5419,7 @@ def reset_series():
 
         if action == "delete":
             store.pop(series_key, None)
-            reason = "v16.2.1-delete-series"
+            reason = "v16.2-delete-series"
             message = f"Serial '{title}' berhasil dihapus. {cancelled} tugas antre dibatalkan."
         else:
             preserved = dict(series)
@@ -5452,7 +5435,7 @@ def reset_series():
             for field in ("catalog_edit_warning", "delete_warning", "catalog_recovery_warning"):
                 preserved.pop(field, None)
             store[series_key] = preserved
-            reason = "v16.2.1-reset-series"
+            reason = "v16.2-reset-series"
             message = f"Serial '{title}' berhasil direset ke E01. {cancelled} tugas antre dibatalkan."
 
         # Exact replacement is required; merge semantics would resurrect old episodes.

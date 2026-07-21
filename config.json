@@ -54,11 +54,5 @@
     "e02plus_compact": true,
     "delete_previous_after_success": true,
     "clickable_episode_links": true
-  },
-  "serial_manager": {
-    "enabled": true,
-    "backup_before_change": true,
-    "block_active_jobs": true,
-    "cancel_queued_jobs": true
   }
 }
